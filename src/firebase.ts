@@ -20,8 +20,10 @@ provider.setCustomParameters({
   prompt: 'consent'
 });
 
+const TOKEN_KEY = 'eduquery_oauth_token';
+
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = localStorage.getItem(TOKEN_KEY);
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -29,14 +31,16 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      const storedToken = localStorage.getItem(TOKEN_KEY);
+      if (storedToken) {
+        cachedAccessToken = storedToken;
+        if (onAuthSuccess) onAuthSuccess(user, storedToken);
       } else {
-        // If we have a user but no cached token (like on page refresh), 
-        // we'll need to re-trigger sign-in to get a fresh token for API calls.
+        // If we have a user but no stored token, clear state and prompt sign-in
         if (onAuthFailure) onAuthFailure();
       }
     } else {
+      localStorage.removeItem(TOKEN_KEY);
       cachedAccessToken = null;
       if (onAuthFailure) onAuthFailure();
     }
@@ -52,6 +56,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       throw new Error('Failed to retrieve access token from Google sign-in.');
     }
     cachedAccessToken = credential.accessToken;
+    localStorage.setItem(TOKEN_KEY, cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Sign-in error:', error);
@@ -62,10 +67,11 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = (): string | null => {
-  return cachedAccessToken;
+  return cachedAccessToken || localStorage.getItem(TOKEN_KEY);
 };
 
 export const logout = async () => {
   await signOut(auth);
+  localStorage.removeItem(TOKEN_KEY);
   cachedAccessToken = null;
 };

@@ -4,39 +4,27 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { User } from 'firebase/auth';
 import { 
   Play, 
   Clock, 
   CheckCircle, 
   XCircle, 
   ChevronRight, 
-  AlertTriangle, 
   Check, 
   RefreshCw,
   Award,
-  HelpCircle,
-  FileSpreadsheet,
-  AlertCircle
+  User as UserIcon,
+  ChevronLeft
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { DEFAULT_QUIZZES, getAllQuizzes } from '../quizzes';
-import { Quiz, Question, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow } from '../types';
-import { appendScoreRow, appendResponseRows } from '../sheets';
+import { getAllQuizzes } from '../quizzes';
+import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow } from '../types';
+import { saveLocalScore, saveLocalResponses } from '../utils/localStorageDb';
 
 interface QuizRunnerProps {
-  user: User | null;
-  token: string | null;
-  spreadsheetId: string | null;
-  onLogin: () => void;
   onResultsSubmitted: () => void;
 }
 
 export default function QuizRunner({
-  user,
-  token,
-  spreadsheetId,
-  onLogin,
   onResultsSubmitted,
 }: QuizRunnerProps) {
   const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
@@ -46,11 +34,17 @@ export default function QuizRunner({
   const [timeLeft, setTimeLeft] = useState(0);
   const [timeTakenSeconds, setTimeTakenSeconds] = useState(0);
   
+  // Name configuration states
+  const [candidateName, setCandidateName] = useState<string>(() => {
+    return localStorage.getItem('eduquery_candidate_name') || '';
+  });
+  const [nameInput, setNameInput] = useState('');
+  const [isChangingName, setIsChangingName] = useState(false);
+  const [quizPendingStart, setQuizPendingStart] = useState<Quiz | null>(null);
+
   // Results view states
   const [sessionResults, setSessionResults] = useState<QuizSession | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState<boolean | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const secondsCounterRef = useRef<NodeJS.Timeout | null>(null);
@@ -86,6 +80,12 @@ export default function QuizRunner({
   }, [isQuizRunning]);
 
   const handleStartQuiz = (quiz: Quiz) => {
+    if (!candidateName.trim()) {
+      setQuizPendingStart(quiz);
+      setNameInput('');
+      return;
+    }
+
     setSelectedQuiz(quiz);
     setCurrentQuestionIndex(0);
     setUserAnswers({});
@@ -93,8 +93,21 @@ export default function QuizRunner({
     setTimeTakenSeconds(0);
     setSessionResults(null);
     setSubmitSuccess(null);
-    setSubmitError(null);
     setIsQuizRunning(true);
+  };
+
+  const handleSaveNameAndStart = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nameInput.trim()) return;
+
+    localStorage.setItem('eduquery_candidate_name', nameInput.trim());
+    setCandidateName(nameInput.trim());
+
+    const targetQuiz = quizPendingStart;
+    setQuizPendingStart(null);
+    if (targetQuiz) {
+      handleStartQuiz(targetQuiz);
+    }
   };
 
   const handleSelectMCQ = (questionId: string, option: string) => {
@@ -146,11 +159,12 @@ export default function QuizRunner({
       };
     });
 
+    const emailPrefix = (candidateName || 'anonymous').toLowerCase().replace(/\s+/g, '');
     const finalSession: QuizSession = {
       quizId: selectedQuiz.id,
       quizTitle: selectedQuiz.title,
-      userName: user?.displayName || 'Anonymous Candidate',
-      userEmail: user?.email || 'anonymous@eduquery.internal',
+      userName: candidateName || 'Anonymous Candidate',
+      userEmail: `${emailPrefix}@eduquery.internal`,
       responses,
       score: totalCorrect,
       totalQuestions: selectedQuiz.questions.length,
@@ -159,57 +173,39 @@ export default function QuizRunner({
     };
 
     setSessionResults(finalSession);
-    await uploadResultsToSheets(finalSession);
+    await uploadResultsToLocal(finalSession);
   };
 
-  const uploadResultsToSheets = async (session: QuizSession) => {
-    if (!token || !spreadsheetId) {
-      setSubmitSuccess(false);
-      return;
-    }
+  const uploadResultsToLocal = async (session: QuizSession) => {
+    const percentage = Math.round((session.score / session.totalQuestions) * 100);
+    
+    const scoreRow: SheetScoreRow = {
+      timestamp: session.timestamp,
+      userName: session.userName,
+      userEmail: session.userEmail,
+      score: session.score,
+      totalQuestions: session.totalQuestions,
+      percentage,
+      timeTakenSeconds: session.timeTakenSeconds,
+    };
 
-    setIsSubmitting(true);
-    setSubmitError(null);
-    setSubmitSuccess(null);
+    const responseRows: SheetResponseRow[] = session.responses.map((resp, idx) => ({
+      timestamp: session.timestamp,
+      userEmail: session.userEmail,
+      questionIndex: idx + 1,
+      questionText: resp.questionText,
+      type: resp.questionType,
+      userAnswer: resp.userAnswer,
+      correctAnswer: resp.correctAnswer,
+      isCorrect: resp.isCorrect,
+      category: resp.category,
+    }));
 
-    try {
-      const percentage = Math.round((session.score / session.totalQuestions) * 100);
-      
-      const scoreRow: SheetScoreRow = {
-        timestamp: session.timestamp,
-        userName: session.userName,
-        userEmail: session.userEmail,
-        score: session.score,
-        totalQuestions: session.totalQuestions,
-        percentage,
-        timeTakenSeconds: session.timeTakenSeconds,
-      };
-
-      const responseRows: SheetResponseRow[] = session.responses.map((resp, idx) => ({
-        timestamp: session.timestamp,
-        userEmail: session.userEmail,
-        questionIndex: idx + 1,
-        questionText: resp.questionText,
-        type: resp.questionType,
-        userAnswer: resp.userAnswer,
-        correctAnswer: resp.correctAnswer,
-        isCorrect: resp.isCorrect,
-        category: resp.category,
-      }));
-
-      // Mutates remote Sheets (Google Sheet database)
-      await appendScoreRow(token, spreadsheetId, scoreRow);
-      await appendResponseRows(token, spreadsheetId, responseRows);
-
-      setSubmitSuccess(true);
-      onResultsSubmitted(); // trigger reload on leaderboard/analytics in parent state
-    } catch (err: any) {
-      console.error(err);
-      setSubmitError(err?.message || 'Failed to submit results. Please double-check Sheets connection.');
-      setSubmitSuccess(false);
-    } finally {
-      setIsSubmitting(false);
-    }
+    // Save locally to local storage DB
+    saveLocalScore(scoreRow);
+    saveLocalResponses(responseRows);
+    setSubmitSuccess(true);
+    onResultsSubmitted(); // trigger reload on leaderboard/analytics in parent state
   };
 
   // Human-readable time converter
@@ -250,74 +246,85 @@ export default function QuizRunner({
             <div 
               className="h-full bg-white rounded-full transition-all duration-300" 
               style={{ width: `${progressPercent}%` }}
-            ></div>
+            />
           </div>
         </div>
 
         {/* Question Panel */}
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-6 sm:p-8 shadow-sm">
-          <span className="inline-flex items-center rounded-md bg-white/5 border border-white/10 px-2 py-0.5 font-mono text-[9px] font-bold text-white/50 uppercase tracking-wide mb-3">
-            {currentQuestion.category} • {currentQuestion.type === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
-          </span>
-          <h4 className="font-sans text-base sm:text-lg font-medium text-white mb-6 leading-snug">
-            {currentQuestion.text}
-          </h4>
+        <div className="rounded-2xl border border-white/10 bg-[#141414] p-6 sm:p-8 shadow-xl relative overflow-hidden mb-8">
+          <div className="absolute top-0 right-0 p-4 font-mono text-[100px] font-black text-white/5 leading-none select-none pointer-events-none">
+            {currentQuestionIndex + 1}
+          </div>
+          
+          <div className="space-y-6 relative z-10">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center space-x-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-0.5 font-mono text-[9px] font-bold text-white/40">
+                <span>{currentQuestion.category.toUpperCase()}</span>
+              </span>
+              <span className="font-mono text-[10px] text-white/40">
+                {currentQuestion.type === 'mcq' ? 'MULTIPLE CHOICE' : 'SHORT ANSWER'}
+              </span>
+            </div>
 
-          {/* Answer Form */}
-          {currentQuestion.type === 'mcq' ? (
-            <div className="space-y-3">
-              {currentQuestion.options?.map((option, idx) => {
-                const isSelected = userAnswers[currentQuestion.id] === option;
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => handleSelectMCQ(currentQuestion.id, option)}
-                    className={`flex items-center justify-between w-full rounded-xl border p-4 text-left transition-all hover:bg-white/5 cursor-pointer ${
-                      isSelected 
-                        ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400 font-semibold shadow-sm' 
-                        : 'border-white/5 bg-[#181818] text-white/80'
-                    }`}
-                  >
-                    <span className="font-sans text-sm">{option}</span>
-                    <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
-                      isSelected ? 'border-emerald-500 bg-emerald-500 text-[#0A0A0A]' : 'border-white/20'
-                    }`}>
-                      {isSelected && <Check className="h-3 w-3 stroke-[3]" />}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <label className="font-mono text-[9px] uppercase font-semibold text-white/40">Your Answer</label>
-              <input
-                type="text"
-                autoComplete="off"
-                value={userAnswers[currentQuestion.id] || ''}
-                onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
-                placeholder="Type your exact response here..."
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 font-sans text-sm text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
-              />
-            </div>
-          )}
+            <h4 className="font-sans text-lg font-medium text-white leading-snug">
+              {currentQuestion.text}
+            </h4>
+
+            {/* Answer Inputs */}
+            {currentQuestion.type === 'mcq' ? (
+              <div className="space-y-3 pt-2">
+                {currentQuestion.options?.map((option, idx) => {
+                  const isSelected = userAnswers[currentQuestion.id] === option;
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => handleSelectMCQ(currentQuestion.id, option)}
+                      className={`w-full flex items-center justify-between rounded-xl border p-4 font-sans text-sm font-semibold transition-all cursor-pointer text-left ${
+                        isSelected 
+                          ? 'border-white bg-white text-black' 
+                          : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                      }`}
+                    >
+                      <span>{option}</span>
+                      <div className={`h-4.5 w-4.5 rounded-full border flex items-center justify-center ${
+                        isSelected ? 'border-black bg-black' : 'border-white/30'
+                      }`}>
+                        {isSelected && <Check className="h-3 w-3 text-white" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="pt-2">
+                <input
+                  type="text"
+                  placeholder="Type your answer here..."
+                  value={userAnswers[currentQuestion.id] || ''}
+                  onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 font-sans text-sm text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
+                />
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Question Controls */}
-        <div className="flex justify-between items-center mt-6">
+        {/* Bottom Nav Controls */}
+        <div className="flex items-center justify-between">
           <button
             onClick={handlePrev}
             disabled={currentQuestionIndex === 0}
-            className="rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 font-sans text-xs font-medium text-white/60 hover:bg-white/10 disabled:opacity-40 transition-colors"
+            className="flex items-center space-x-1.5 rounded-xl border border-white/10 bg-[#111] px-5 py-2.5 font-sans text-xs font-bold text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
           >
-            Previous
+            <ChevronLeft className="h-4 w-4" />
+            <span>Previous</span>
           </button>
-          
+
           <button
             onClick={handleNext}
-            className="flex items-center space-x-1.5 rounded-xl bg-white px-6 py-2.5 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm transition-all cursor-pointer"
+            className="flex items-center space-x-1.5 rounded-xl bg-white px-5 py-2.5 font-sans text-xs font-bold text-black hover:bg-white/90 shadow-sm cursor-pointer"
           >
-            <span>{isLastQuestion ? 'Finish Quiz' : 'Next Question'}</span>
+            <span>{isLastQuestion ? 'Submit & Grade' : 'Next Question'}</span>
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
@@ -326,74 +333,71 @@ export default function QuizRunner({
     );
   }
 
-  // Results & Detailed Explanations
-  if (sessionResults) {
-    const percentage = Math.round((sessionResults.score / sessionResults.totalQuestions) * 100);
-    const scoreMessage = percentage >= 80 
-      ? "Superb! You demonstrated advanced frontend mastery." 
-      : percentage >= 50 
-        ? "Good job! You have a solid grasp but have room to grow." 
-        : "Keep studying! Review the concepts and explanations below.";
-
+  // Score review results screen
+  if (sessionResults && selectedQuiz) {
+    const scorePercent = Math.round((sessionResults.score / sessionResults.totalQuestions) * 100);
+    
     return (
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
         
-        {/* Score Hero Card */}
-        <div className="rounded-3xl border border-white/5 bg-[#141414] p-8 text-center shadow-sm space-y-6 mb-8">
-          <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white">
-            <Award className="h-8 w-8" />
+        {/* Session Results Header */}
+        <div className="text-center space-y-4 mb-10">
+          <div className="inline-flex h-16 w-16 items-center justify-center rounded-3xl bg-white/5 border border-white/10 text-white mb-2">
+            <Award className="h-8 w-8 text-white/95" />
           </div>
-          <div>
-            <h3 className="font-serif italic text-2xl text-white">Quiz Completed!</h3>
-            <p className="mt-1 font-sans text-sm text-white/60">{scoreMessage}</p>
+          <div className="space-y-1">
+            <span className="font-mono text-[9px] uppercase tracking-[0.2em] font-bold text-white/40">GRADES GENERATED</span>
+            <h2 className="font-serif italic text-3xl text-white">Quiz Results Overview</h2>
+            <p className="font-sans text-xs text-white/50">
+              Candidate: <span className="font-bold text-white">{sessionResults.userName}</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Dashboard Results Cards */}
+        <div className="grid sm:grid-cols-3 gap-4 mb-8">
+          
+          <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex flex-col justify-between">
+            <span className="font-mono text-[9px] uppercase font-bold text-white/40">Total Score</span>
+            <div className="flex items-baseline space-x-1.5 mt-3">
+              <span className="font-serif italic text-3xl text-white font-black">{sessionResults.score}</span>
+              <span className="font-sans text-sm text-white/40">/ {sessionResults.totalQuestions}</span>
+            </div>
+            <span className="font-sans text-[10px] text-white/50 mt-1">Questions correctly answered</span>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 max-w-md mx-auto pt-4 border-t border-white/10">
-            <div className="text-center">
-              <span className="block font-sans text-2xl font-light text-white">{percentage}%</span>
-              <span className="font-mono text-[9px] uppercase font-bold text-white/40">Score</span>
+          <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex flex-col justify-between">
+            <span className="font-mono text-[9px] uppercase font-bold text-white/40">Grade Percentage</span>
+            <div className="flex items-baseline space-x-1 mt-3">
+              <span className="font-serif italic text-3xl text-white font-black">{scorePercent}%</span>
             </div>
-            <div className="text-center border-x border-white/10">
-              <span className="block font-sans text-2xl font-light text-white">{sessionResults.score}/{sessionResults.totalQuestions}</span>
-              <span className="font-mono text-[9px] uppercase font-bold text-white/40">Correct</span>
-            </div>
-            <div className="text-center">
-              <span className="block font-sans text-2xl font-light text-white">{formatTime(sessionResults.timeTakenSeconds)}</span>
-              <span className="font-mono text-[9px] uppercase font-bold text-white/40">Time taken</span>
-            </div>
+            <span className={`font-sans text-[10px] mt-1 font-semibold ${
+              scorePercent >= 80 ? 'text-emerald-400' : scorePercent >= 50 ? 'text-amber-400' : 'text-rose-400'
+            }`}>
+              {scorePercent >= 80 ? 'Distinguished Master' : scorePercent >= 50 ? 'Passing Mark Met' : 'Requires Review'}
+            </span>
           </div>
 
-          {/* Sheet Upload Alert */}
-          <div className="pt-2">
-            {isSubmitting ? (
-              <div className="inline-flex items-center space-x-2 rounded-full bg-white/5 border border-white/10 px-4 py-1.5 font-sans text-xs text-white/60">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin text-white/40" />
-                <span>Syncing score to Google Sheets...</span>
-              </div>
-            ) : submitSuccess ? (
-              <div className="inline-flex items-center space-x-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 font-sans text-xs text-emerald-400">
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-500" />
-                <span>Synced to Google Sheet Database!</span>
-              </div>
-            ) : (
-              <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4 font-sans text-xs text-amber-300 max-w-md mx-auto text-left space-y-2">
-                <div className="flex items-center space-x-1.5">
-                  <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
-                  <span className="font-bold text-amber-200">Google Sheets Connection Status</span>
-                </div>
-                <p className="text-amber-300/80 leading-relaxed">
-                  {submitError || "Connect sheets database in the 'DB Config' tab to record and share scores with other developers and access advanced leaderboards."}
-                </p>
-                {!token && (
-                  <button
-                    onClick={onLogin}
-                    className="mt-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-semibold px-3 py-1 font-sans text-[11px] transition-all"
-                  >
-                    Sign In with Google
-                  </button>
-                )}
-              </div>
-            )}
+          <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex flex-col justify-between">
+            <span className="font-mono text-[9px] uppercase font-bold text-white/40">Time Taken</span>
+            <div className="flex items-baseline space-x-1 mt-3">
+              <span className="font-serif italic text-3xl text-white font-black">{formatTime(sessionResults.timeTakenSeconds)}</span>
+            </div>
+            <span className="font-sans text-[10px] text-white/50 mt-1">Total countdown duration spent</span>
+          </div>
+
+        </div>
+
+        {/* Database syncing status */}
+        <div className="rounded-2xl border border-white/5 bg-[#121212] p-4 mb-10 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+              <CheckCircle className="h-5 w-5" />
+            </div>
+            <div>
+              <span className="font-sans text-xs font-bold text-white block">Saved to Local Leaderboard</span>
+              <span className="font-sans text-[10px] text-white/50 leading-tight block">Your scores and analysis have been persisted successfully in this browser.</span>
+            </div>
           </div>
         </div>
 
@@ -471,10 +475,148 @@ export default function QuizRunner({
     );
   }
 
+  // Candidate Name registration gate / Lobby Name setup
+  if (quizPendingStart) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16">
+        <div className="rounded-3xl border border-white/10 bg-[#141414] p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+            <UserIcon className="w-32 h-32" />
+          </div>
+
+          <div className="flex flex-col items-center text-center space-y-4 mb-6 relative z-10">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white">
+              <UserIcon className="h-5 w-5 text-white/90" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="font-serif italic text-lg text-white">Identity Registration</h3>
+              <p className="font-sans text-xs text-white/40">
+                Please enter your full name before attempting <span className="font-bold text-white">"{quizPendingStart.title}"</span>.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveNameAndStart} className="space-y-4 relative z-10">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-white/40 font-mono">
+                Full Name
+              </label>
+              <input
+                type="text"
+                placeholder="Enter your name"
+                required
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 font-sans text-sm text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setQuizPendingStart(null)}
+                className="w-1/2 flex items-center justify-center rounded-xl border border-white/10 bg-transparent py-2.5 font-sans text-xs font-semibold text-white/80 hover:bg-white/5 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="w-1/2 flex items-center justify-center rounded-xl bg-white py-2.5 font-sans text-xs font-semibold text-black hover:bg-white/90 transition-all cursor-pointer shadow-sm"
+              >
+                Begin Session
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   // Selection list screen
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
       
+      {/* Candidate Name Indicator */}
+      <div className="mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-2xl border border-white/5 bg-[#121212]/50 p-4">
+        <div className="flex items-center space-x-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 border border-white/10 text-white">
+            <UserIcon className="h-5 w-5 text-white/80" />
+          </div>
+          <div>
+            {candidateName ? (
+              <>
+                <span className="font-sans text-xs text-white/40 block leading-none font-semibold">TAKING QUIZZES AS</span>
+                <span className="font-sans text-sm font-bold text-white leading-tight">{candidateName}</span>
+              </>
+            ) : (
+              <>
+                <span className="font-sans text-xs text-white/40 block leading-none">CANDIDATE IDENTITY</span>
+                <span className="font-sans text-xs italic text-amber-300">Identity required to save scores</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {candidateName && !isChangingName ? (
+            <button
+              onClick={() => {
+                setNameInput(candidateName);
+                setIsChangingName(true);
+              }}
+              className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-1.5 font-sans text-[11px] font-semibold text-white/80 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              Change Name
+            </button>
+          ) : isChangingName ? (
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (nameInput.trim()) {
+                  localStorage.setItem('eduquery_candidate_name', nameInput.trim());
+                  setCandidateName(nameInput.trim());
+                  setIsChangingName(false);
+                }
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                type="text"
+                placeholder="Enter name"
+                required
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                className="rounded-xl border border-white/10 bg-[#1A1A1A] px-3 py-1 text-xs text-white focus:outline-none w-36"
+              />
+              <button
+                type="submit"
+                className="rounded-xl bg-white px-3 py-1 text-xs font-semibold text-black hover:bg-white/90 cursor-pointer"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsChangingName(false)}
+                className="text-xs text-white/40 hover:text-white/80 px-1.5 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => {
+                setNameInput('');
+                setIsChangingName(true);
+              }}
+              className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-1.5 font-sans text-[11px] font-semibold text-white/80 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              Register Candidate Name
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Quiz Dashboard Header */}
       <div className="text-center mb-10">
         <h2 className="font-serif italic text-3xl text-white">Ready for a challenge?</h2>

@@ -9,6 +9,45 @@ export default function QuizManager() {
   const [success, setSuccess] = useState<string | null>(null);
   const [customQuizzes, setCustomQuizzes] = useState<Quiz[]>(getCustomQuizzes());
   const [copied, setCopied] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    setError(null);
+    setSuccess(null);
+    
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'application/json' && !file.name.endsWith('.json')) {
+      setError('Only .json files are supported.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        if (content) {
+          setJsonInput(content);
+          setSuccess(`Loaded JSON file "${file.name}"! Click 'Import Quiz' below to save.`);
+        }
+      } catch (err) {
+        setError("Error reading file.");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const exampleQuiz: Quiz = {
     id: "example-quiz-id",
@@ -119,7 +158,16 @@ export default function QuizManager() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         <div className="space-y-6">
-          <div className="rounded-2xl border border-white/10 bg-[#1A1A1A] p-6 shadow-xl relative overflow-hidden">
+          <div 
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`rounded-2xl border p-6 shadow-xl relative overflow-hidden transition-all duration-200 ${
+              isDragging 
+                ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]' 
+                : 'border-white/10 bg-[#1A1A1A]'
+            }`}
+          >
             <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
               <FileJson className="w-32 h-32" />
             </div>
@@ -131,7 +179,7 @@ export default function QuizManager() {
             <div className="space-y-4 relative z-10">
               <div className="flex justify-between items-end">
                 <label className="block text-sm font-medium text-white/70">
-                  Raw JSON
+                  {isDragging ? 'Drop your JSON file here!' : 'Raw JSON'}
                 </label>
                 <label className="cursor-pointer inline-flex items-center space-x-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
                   <span>Upload File Instead</span>

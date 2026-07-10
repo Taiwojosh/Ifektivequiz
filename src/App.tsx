@@ -4,107 +4,43 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User } from 'firebase/auth';
 import Navbar from './components/Navbar';
 import QuizRunner from './components/QuizRunner';
 import Leaderboard from './components/Leaderboard';
 import Analytics from './components/Analytics';
-import DatabaseConfig from './components/DatabaseConfig';
 import QuizManager from './components/QuizManager';
-import { initAuth, googleSignIn, logout } from './firebase';
-import { validateSpreadsheet } from './sheets';
-import { AlertCircle, HelpCircle, FileSpreadsheet, ExternalLink } from 'lucide-react';
+import { AlertCircle, HelpCircle, Lock, ShieldAlert, X } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
-  const [needsAuth, setNeedsAuth] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'quiz' | 'leaderboard' | 'analytics' | 'settings' | 'manage'>('quiz');
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
+    return localStorage.getItem('eduquery_admin_logged_in') === 'true';
+  });
+  const [activeTab, setActiveTab] = useState<'quiz' | 'leaderboard' | 'analytics' | 'manage'>('quiz');
   
   // Incremented whenever a quiz ends, prompting leaderboard & analytics components to reload
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Initialize auth listener
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (currentUser, accessToken) => {
-        setUser(currentUser);
-        setToken(accessToken);
-        setNeedsAuth(false);
-      },
-      () => {
-        setUser(null);
-        setToken(null);
-        setNeedsAuth(true);
-      }
-    );
-
-    // Retrieve saved spreadsheet ID from localStorage
-    const savedId = localStorage.getItem('eduquery_spreadsheet_id');
-    if (savedId) {
-      setSpreadsheetId(savedId);
-    }
-
-    return () => unsubscribe();
-  }, []);
-
-  // Validate spreadsheet when token is obtained
-  useEffect(() => {
-    const checkSpreadsheet = async () => {
-      if (token && spreadsheetId) {
-        const isValid = await validateSpreadsheet(token, spreadsheetId);
-        if (!isValid) {
-          console.warn("Retrieved spreadsheet ID could not be validated.");
-          // Don't disconnect immediately in case of temporary network glitch, 
-          // but logging is helpful.
-        }
-      }
-    };
-    checkSpreadsheet();
-  }, [token, spreadsheetId]);
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
     setLoginError(null);
-    try {
-      const result = await googleSignIn();
-      if (result) {
-        setUser(result.user);
-        setToken(result.accessToken);
-        setNeedsAuth(false);
-      }
-    } catch (err: any) {
-      console.error('Login failed:', err);
-      const errMsg = err?.message || err?.toString() || '';
-      const errCode = err?.code || '';
-      
-      if (
-        errCode === 'auth/popup-closed-by-user' || 
-        errMsg.includes('popup-closed-by-user') || 
-        errMsg.includes('closed-by-user')
-      ) {
-        setLoginError(
-          "The Google sign-in window was closed or blocked. Because this application is running inside a preview iframe, browsers block popups or third-party cookies by default. Please click the 'Open in New Tab' button below or at the top-right of this preview to sign in successfully!"
-        );
-      } else {
-        setLoginError(errMsg || "An unexpected error occurred during Google Sign-in.");
-      }
-    } finally {
-      setIsLoggingIn(false);
+    if (passwordInput === 'admin') {
+      setIsAdmin(true);
+      localStorage.setItem('eduquery_admin_logged_in', 'true');
+      setIsLoginModalOpen(false);
+      setPasswordInput('');
+    } else {
+      setLoginError('Invalid administrator password. Try "admin"!');
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setUser(null);
-      setToken(null);
-      setNeedsAuth(true);
-    } catch (err) {
-      console.error('Logout failed:', err);
+  const handleAdminLogout = () => {
+    setIsAdmin(false);
+    localStorage.removeItem('eduquery_admin_logged_in');
+    if (activeTab === 'analytics' || activeTab === 'manage') {
+      setActiveTab('quiz');
     }
   };
 
@@ -112,60 +48,50 @@ export default function App() {
     setRefreshTrigger(prev => prev + 1);
   };
 
-  const isAdmin = user?.email === 'taiwojoshua423@gmail.com';
-
   const renderActiveTab = () => {
     switch (activeTab) {
       case 'quiz':
         return (
           <QuizRunner
-            user={user}
-            token={token}
-            spreadsheetId={spreadsheetId}
-            onLogin={handleLogin}
             onResultsSubmitted={handleResultsSubmitted}
           />
         );
       case 'leaderboard':
         return (
           <Leaderboard
-            token={token}
-            spreadsheetId={spreadsheetId}
             refreshTrigger={refreshTrigger}
           />
         );
       case 'analytics':
         return isAdmin ? (
           <Analytics
-            token={token}
-            spreadsheetId={spreadsheetId}
             refreshTrigger={refreshTrigger}
           />
         ) : (
-          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50">
-            <p>You need administrator privileges to view analytics.</p>
-          </div>
-        );
-      case 'settings':
-        return isAdmin ? (
-          <DatabaseConfig
-            token={token}
-            spreadsheetId={spreadsheetId}
-            setSpreadsheetId={setSpreadsheetId}
-            onLogin={handleLogin}
-            isLoggingIn={isLoggingIn}
-          />
-        ) : (
-          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50">
-            <p>You need administrator privileges to configure the database.</p>
+          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
+            <ShieldAlert className="h-10 w-10 text-rose-500 animate-bounce" />
+            <p className="font-sans text-sm">You need administrator privileges to view analytics.</p>
+            <button
+              onClick={() => setIsLoginModalOpen(true)}
+              className="rounded-xl bg-white px-4 py-2 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm cursor-pointer"
+            >
+              Unlock Admin Portal
+            </button>
           </div>
         );
       case 'manage':
         return isAdmin ? (
           <QuizManager />
         ) : (
-          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50">
-            <p>You need administrator privileges to manage quizzes.</p>
+          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
+            <ShieldAlert className="h-10 w-10 text-rose-500 animate-bounce" />
+            <p className="font-sans text-sm">You need administrator privileges to manage quizzes.</p>
+            <button
+              onClick={() => setIsLoginModalOpen(true)}
+              className="rounded-xl bg-white px-4 py-2 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm cursor-pointer"
+            >
+              Unlock Admin Portal
+            </button>
           </div>
         );
       default:
@@ -179,52 +105,69 @@ export default function App() {
       {/* Top Banner and Navigation */}
       <div className="flex-1 flex flex-col">
         <Navbar
-          user={user}
-          needsAuth={needsAuth}
+          isAdmin={isAdmin}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
-          spreadsheetId={spreadsheetId}
-          onLogin={handleLogin}
-          onLogout={handleLogout}
-          isLoggingIn={isLoggingIn}
+          onLoginClick={() => setIsLoginModalOpen(true)}
+          onLogoutClick={handleAdminLogout}
         />
 
-        {/* Warning banner for iframe sign-in popups */}
-        {loginError && (
-          <div className="mx-auto w-full max-w-4xl px-4 pt-6 sm:px-6 lg:px-8">
-            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 font-sans text-xs text-amber-300 relative overflow-hidden shadow-[0_0_15px_rgba(245,158,11,0.08)]">
-              <div className="flex items-start space-x-3 pr-8">
-                <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5 animate-pulse" />
-                <div className="space-y-1.5">
-                  <span className="font-bold text-amber-200 block text-sm">Iframe Preview Sign-in Notice</span>
-                  <p className="text-amber-300/80 leading-relaxed font-sans text-xs">
-                    {loginError}
+        {/* Beautiful Admin Password Login Modal */}
+        {isLoginModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="relative w-full max-w-sm rounded-3xl border border-white/10 bg-[#141414] p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+              
+              <button
+                onClick={() => {
+                  setIsLoginModalOpen(false);
+                  setLoginError(null);
+                  setPasswordInput('');
+                }}
+                className="absolute top-4 right-4 text-white/40 hover:text-white/80 transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+
+              <div className="flex flex-col items-center text-center space-y-4 mb-6">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white">
+                  <Lock className="h-5 w-5 text-white/90" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-serif italic text-lg text-white">Administrator Portal</h3>
+                  <p className="font-sans text-xs text-white/40">
+                    Enter the access passcode to unlock grading tools, analytics, and quiz managers.
                   </p>
-                  <div className="pt-2 flex flex-wrap items-center gap-3">
-                    <a
-                      href={window.location.href}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center space-x-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 px-3.5 py-2 transition-all font-semibold uppercase tracking-wider text-[10px] cursor-pointer"
-                    >
-                      <span>Open in New Tab</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                    <button
-                      onClick={() => setLoginError(null)}
-                      className="text-amber-400/60 hover:text-amber-200 transition-colors underline underline-offset-4 text-[11px]"
-                    >
-                      Dismiss Error
-                    </button>
-                  </div>
                 </div>
               </div>
-              <button
-                onClick={() => setLoginError(null)}
-                className="absolute top-3.5 right-4 text-amber-400/40 hover:text-amber-200 transition-colors text-lg"
-              >
-                &times;
-              </button>
+
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-white/40 font-mono">
+                    Passcode
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Enter 'admin' to test"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 font-sans text-sm text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
+                    autoFocus
+                  />
+                </div>
+
+                {loginError && (
+                  <p className="font-sans text-xs text-rose-400 font-semibold leading-relaxed">
+                    {loginError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full flex items-center justify-center rounded-xl bg-white py-2.5 font-sans text-xs font-semibold text-black hover:bg-white/90 transition-all cursor-pointer shadow-sm"
+                >
+                  Verify Password
+                </button>
+              </form>
             </div>
           </div>
         )}
@@ -239,11 +182,11 @@ export default function App() {
       <footer id="app-footer" className="border-t border-white/10 bg-[#0F0F0F] py-6 mt-8">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="font-sans text-xs text-white/40">
-            &copy; 2026 EduQuery Analytics. Built for educators, engineers, and learning teams.
+            &copy; 2026 EduQuery Analytics. Offline-first grading engine.
           </p>
           <div className="flex items-center space-x-4 font-mono text-[10px] text-white/40">
-            <span>DATABASE: GOOGLE SHEETS API V4</span>
-            <span>OAUTH 2.0 PROTOCOL</span>
+            <span>DATABASE: LOCAL STORAGE DB</span>
+            <span>SECURE CRYPTO VERIFIER</span>
           </div>
         </div>
       </footer>

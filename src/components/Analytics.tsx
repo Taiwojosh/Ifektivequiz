@@ -16,25 +16,16 @@ import {
 } from 'recharts';
 import { jsPDF } from 'jspdf';
 import { 
-  BarChart3, 
   Download, 
-  RefreshCw, 
   AlertTriangle, 
-  CheckCircle, 
-  XCircle, 
-  HelpCircle,
-  FileText,
-  TrendingUp,
   Award,
   Users,
-  AlertCircle
+  TrendingUp
 } from 'lucide-react';
-import { fetchResponses } from '../sheets';
 import { SheetResponseRow } from '../types';
+import { getLocalResponses } from '../utils/localStorageDb';
 
 interface AnalyticsProps {
-  token: string | null;
-  spreadsheetId: string | null;
   refreshTrigger: number;
 }
 
@@ -80,48 +71,22 @@ const LOCAL_RESPONSE_MOCKS: SheetResponseRow[] = [
 ];
 
 export default function Analytics({
-  token,
-  spreadsheetId,
   refreshTrigger,
 }: AnalyticsProps) {
   const [rawData, setRawData] = useState<SheetResponseRow[]>([]);
   const [metrics, setMetrics] = useState<QuestionMetrics[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showDemoData, setShowDemoData] = useState(true);
 
-  const loadAnalyticsData = async () => {
-    if (!token || !spreadsheetId) {
-      setRawData(LOCAL_RESPONSE_MOCKS);
-      processMetrics(LOCAL_RESPONSE_MOCKS);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const responses = await fetchResponses(token, spreadsheetId);
-      if (responses.length === 0) {
-        // Fallback to mock data if connected database is empty so far
-        setRawData(LOCAL_RESPONSE_MOCKS);
-        processMetrics(LOCAL_RESPONSE_MOCKS);
-      } else {
-        setRawData(responses);
-        processMetrics(responses);
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError('Failed to fetch analytics from Google Sheet. Displaying local cache.');
-      setRawData(LOCAL_RESPONSE_MOCKS);
-      processMetrics(LOCAL_RESPONSE_MOCKS);
-    } finally {
-      setIsLoading(false);
-    }
+  const loadAnalyticsData = () => {
+    const local = getLocalResponses();
+    const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
+    setRawData(combined);
+    processMetrics(combined);
   };
 
   useEffect(() => {
     loadAnalyticsData();
-  }, [token, spreadsheetId, refreshTrigger]);
+  }, [refreshTrigger, showDemoData]);
 
   const processMetrics = (data: SheetResponseRow[]) => {
     // Group by unique question text
@@ -219,7 +184,7 @@ export default function Analytics({
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(156, 163, 175);
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}  |  Database Source: ${spreadsheetId ? 'Google Sheets' : 'Local Sandbox'}`, margin, 26);
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}  |  Database Source: Local Sandbox`, margin, 26);
     doc.text(`Target Audience: Quiz Administrators & Instructors`, margin, 31);
 
     y = 52;
@@ -228,7 +193,6 @@ export default function Analytics({
     addText('Core Metrics Overview', 12, 'bold', [17, 24, 39]);
     y += 2;
 
-    // Grid details
     const uniqueCandidates = new Set(rawData.map(r => r.userEmail)).size;
     const avgAccuracy = Math.round((rawData.filter(r => r.isCorrect).length / rawData.length) * 100) || 0;
     const hardestQ = metrics[0]?.questionText || 'N/A';
@@ -293,12 +257,13 @@ export default function Analytics({
         </div>
 
         <div className="flex items-center space-x-2">
-          {(!token || !spreadsheetId) && (
-            <div className="inline-flex items-center space-x-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 px-3.5 py-1 font-sans text-xs text-amber-400 font-semibold shadow-[0_0_8px_rgba(245,158,11,0.05)]">
-              <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-              <span>Demo Data (No Sheet Connected)</span>
-            </div>
-          )}
+          <button
+            onClick={() => setShowDemoData(prev => !prev)}
+            className="flex items-center space-x-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 font-sans text-xs font-semibold text-white/80 hover:bg-white/10 transition-all cursor-pointer"
+          >
+            <span>{showDemoData ? "Showing Demo Data" : "Show Demo Data"}</span>
+            <div className={`h-2 w-2 rounded-full ${showDemoData ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`} />
+          </button>
 
           <button
             onClick={handleExportPDF}
@@ -311,147 +276,169 @@ export default function Analytics({
         </div>
       </div>
 
-      {/* Cohort Stats Cards */}
-      <div className="grid gap-4 sm:grid-cols-3 mb-8">
-        
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/5 border border-white/10 text-white">
-            <Users className="h-5 w-5 text-white/80" />
+      {rawData.length === 0 ? (
+        <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-6 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+          <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/40">
+            <TrendingUp className="h-6 w-6" />
           </div>
-          <div>
-            <span className="block font-serif text-2xl font-light text-white">{uniqueParticipantsCount}</span>
-            <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Tested Candidates</span>
+          <div className="space-y-2">
+            <h4 className="font-sans text-sm font-bold text-white">No Analytics Data Yet</h4>
+            <p className="font-sans text-xs text-white/50 leading-relaxed">
+              This browser has not recorded any local quiz responses yet. Complete a quiz first to generate struggle analysis, or enable Demo Data to preview the analytics interface.
+            </p>
           </div>
+          <button
+            onClick={() => setShowDemoData(true)}
+            className="inline-flex items-center space-x-1.5 rounded-xl border border-amber-500/20 bg-amber-500/10 hover:bg-amber-500/20 px-4 py-2 font-sans text-xs font-semibold text-amber-400 transition-all cursor-pointer"
+          >
+            <span>Enable Demo Data</span>
+          </button>
         </div>
-
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-            <Award className="h-5 w-5" />
-          </div>
-          <div>
-            <span className="block font-serif text-2xl font-light text-emerald-400">{overallSuccessRate}%</span>
-            <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Cohort Accuracy</span>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm border-l-4 border-l-rose-500">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400">
-            <TrendingUp className="h-5 w-5" />
-          </div>
-          <div>
-            <span className="block font-serif text-2xl font-light text-rose-400">
-              {metrics[0] ? `${metrics[0].errorRate}%` : '0%'}
-            </span>
-            <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Highest Error Rate</span>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Chart Section */}
-      {metrics.length > 0 && (
-        <div className="rounded-2xl border border-white/5 bg-[#111111] p-5 sm:p-6 shadow-sm mb-8">
-          <h3 className="font-serif italic text-sm text-white mb-6">Error Rates by Question</h3>
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255, 255, 255, 0.05)" />
-                <XAxis 
-                  dataKey="name" 
-                  tick={{ fill: 'rgba(255, 255, 255, 0.4)', fontSize: 10, fontFamily: 'monospace' }} 
-                  axisLine={{ stroke: 'rgba(255, 255, 255, 0.1)' }}
-                  tickLine={false}
-                />
-                <YAxis 
-                  domain={[0, 100]} 
-                  tick={{ fill: 'rgba(255, 255, 255, 0.4)', fontSize: 10, fontFamily: 'monospace' }} 
-                  axisLine={{ stroke: 'rgba(255, 255, 255, 0.1)' }}
-                  tickLine={false}
-                />
-                <Tooltip 
-                  contentStyle={{ 
-                    fontFamily: 'Inter, sans-serif', 
-                    fontSize: '11px', 
-                    borderRadius: '12px', 
-                    backgroundColor: '#141414',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: '#E0E0E0',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
-                  }} 
-                />
-                <Bar dataKey="Struggle Rate (%)" radius={[6, 6, 0, 0]} barSize={40}>
-                  {chartData.map((entry, index) => {
-                    const rate = entry['Struggle Rate (%)'];
-                    const color = rate >= 60 ? '#f43f5e' : rate >= 40 ? '#f59e0b' : '#6366f1';
-                    return <Cell key={`cell-${index}`} fill={color} />;
-                  })}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Question Cards Breakdown (Hardest First) */}
-      <div className="space-y-6">
-        <h3 className="font-sans text-xs font-semibold text-white/50 uppercase tracking-widest mb-2">Detailed Common Distractor Analysis</h3>
-        
-        {metrics.map((m, idx) => {
-          const difficultyLabel = m.errorRate >= 60 ? 'Hard' : m.errorRate >= 35 ? 'Medium' : 'Easy';
-          const difficultyColor = m.errorRate >= 60 
-            ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' 
-            : m.errorRate >= 35 
-              ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' 
-              : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
-
-          return (
-            <div key={idx} className="rounded-2xl border border-white/5 bg-[#141414] p-5 sm:p-6 shadow-sm space-y-4">
-              
-              {/* Card Meta Header */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="inline-flex items-center rounded-md bg-white/5 border border-white/10 px-2 py-0.5 font-mono text-[10px] font-bold text-white/60 uppercase tracking-tight">
-                  {m.category} • {m.type === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
-                </span>
-
-                <div className="flex items-center space-x-2">
-                  <span className="font-mono text-[10px] text-white/40">{m.totalResponses} submissions</span>
-                  <span className={`inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold border ${difficultyColor}`}>
-                    {difficultyLabel} ({m.errorRate}% Struggle)
-                  </span>
-                </div>
+      ) : (
+        <>
+          {/* Cohort Stats Cards */}
+          <div className="grid gap-4 sm:grid-cols-3 mb-8">
+            
+            <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/5 border border-white/10 text-white">
+                <Users className="h-5 w-5 text-white/80" />
               </div>
-
-              {/* Question Text */}
-              <p className="font-sans text-sm font-semibold text-white leading-snug">{m.questionText}</p>
-
-              {/* Common Distractors / Incorrect details */}
-              <div className="rounded-xl border border-white/5 bg-[#111111]/80 p-4 space-y-3">
-                <span className="font-sans text-xs font-bold text-white/80 flex items-center space-x-1.5">
-                  <AlertTriangle className="h-4 w-4 text-amber-500" />
-                  <span>Common Incorrect Log Entries</span>
-                </span>
-
-                {m.commonIncorrect.length > 0 ? (
-                  <div className="grid sm:grid-cols-3 gap-3">
-                    {m.commonIncorrect.map((inc, i) => {
-                      return (
-                        <div key={i} className="rounded-lg bg-[#181818] border border-white/5 p-3 flex flex-col justify-between">
-                          <span className="font-sans text-xs font-semibold text-white block truncate">"{inc.answer}"</span>
-                          <span className="font-mono text-[9px] text-white/40 mt-2 block">Chosen {inc.count} time(s)</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="font-sans text-xs text-white/40">
-                    No incorrect answers recorded for this question so far.
-                  </p>
-                )}
+              <div>
+                <span className="block font-serif text-2xl font-light text-white">{uniqueParticipantsCount}</span>
+                <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Tested Candidates</span>
               </div>
             </div>
-          );
-        })}
-      </div>
+
+            <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                <Award className="h-5 w-5" />
+              </div>
+              <div>
+                <span className="block font-serif text-2xl font-light text-emerald-400">{overallSuccessRate}%</span>
+                <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Cohort Accuracy</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/5 bg-[#141414] p-5 flex items-center space-x-4 shadow-sm border-l-4 border-l-rose-500">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                <TrendingUp className="h-5 w-5" />
+              </div>
+              <div>
+                <span className="block font-serif text-2xl font-light text-rose-400">
+                  {metrics[0] ? `${metrics[0].errorRate}%` : '0%'}
+                </span>
+                <span className="font-mono text-[9px] uppercase tracking-wider text-white/40 font-bold">Highest Error Rate</span>
+              </div>
+            </div>
+
+          </div>
+
+          {/* Chart Section */}
+          {metrics.length > 0 && (
+            <div className="rounded-2xl border border-white/5 bg-[#111111] p-5 sm:p-6 shadow-sm mb-8">
+              <h3 className="font-serif italic text-sm text-white mb-6">Error Rates by Question</h3>
+              <div className="h-72 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255, 255, 255, 0.05)" />
+                    <XAxis 
+                      dataKey="name" 
+                      tick={{ fill: 'rgba(255, 255, 255, 0.4)', fontSize: 10, fontFamily: 'monospace' }} 
+                      axisLine={{ stroke: 'rgba(255, 255, 255, 0.1)' }}
+                      tickLine={false}
+                    />
+                    <YAxis 
+                      domain={[0, 100]} 
+                      tick={{ fill: 'rgba(255, 255, 255, 0.4)', fontSize: 10, fontFamily: 'monospace' }} 
+                      axisLine={{ stroke: 'rgba(255, 255, 255, 0.1)' }}
+                      tickLine={false}
+                    />
+                    <Tooltip 
+                      contentStyle={{ 
+                        fontFamily: 'Inter, sans-serif', 
+                        fontSize: '11px', 
+                        borderRadius: '12px', 
+                        backgroundColor: '#141414',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: '#E0E0E0',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
+                      }} 
+                    />
+                    <Bar dataKey="Struggle Rate (%)" radius={[6, 6, 0, 0]} barSize={40}>
+                      {chartData.map((entry, index) => {
+                        const rate = entry['Struggle Rate (%)'];
+                        const color = rate >= 60 ? '#f43f5e' : rate >= 40 ? '#f59e0b' : '#6366f1';
+                        return <Cell key={`cell-${index}`} fill={color} />;
+                      })}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Question Cards Breakdown (Hardest First) */}
+          <div className="space-y-6">
+            <h3 className="font-sans text-xs font-semibold text-white/50 uppercase tracking-widest mb-2">Detailed Common Distractor Analysis</h3>
+            
+            {metrics.map((m, idx) => {
+              const difficultyLabel = m.errorRate >= 60 ? 'Hard' : m.errorRate >= 35 ? 'Medium' : 'Easy';
+              const difficultyColor = m.errorRate >= 60 
+                ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' 
+                : m.errorRate >= 35 
+                  ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' 
+                  : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
+
+              return (
+                <div key={idx} className="rounded-2xl border border-white/5 bg-[#141414] p-5 sm:p-6 shadow-sm space-y-4">
+                  
+                  {/* Card Meta Header */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center rounded-md bg-white/5 border border-white/10 px-2 py-0.5 font-mono text-[10px] font-bold text-white/60 uppercase tracking-tight">
+                      {m.category} • {m.type === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                    </span>
+
+                    <div className="flex items-center space-x-2">
+                      <span className="font-mono text-[10px] text-white/40">{m.totalResponses} submissions</span>
+                      <span className={`inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold border ${difficultyColor}`}>
+                        {difficultyLabel} ({m.errorRate}% Struggle)
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Question Text */}
+                  <p className="font-sans text-sm font-semibold text-white leading-snug">{m.questionText}</p>
+
+                  {/* Common Distractors / Incorrect details */}
+                  <div className="rounded-xl border border-white/5 bg-[#111111]/80 p-4 space-y-3">
+                    <span className="font-sans text-xs font-bold text-white/80 flex items-center space-x-1.5">
+                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <span>Common Incorrect Log Entries</span>
+                    </span>
+
+                    {m.commonIncorrect.length > 0 ? (
+                      <div className="grid sm:grid-cols-3 gap-3">
+                        {m.commonIncorrect.map((inc, i) => {
+                          return (
+                            <div key={i} className="rounded-lg bg-[#181818] border border-white/5 p-3 flex flex-col justify-between">
+                              <span className="font-sans text-xs font-semibold text-white block truncate">"{inc.answer}"</span>
+                              <span className="font-mono text-[9px] text-white/40 mt-2 block">Chosen {inc.count} time(s)</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="font-sans text-xs text-white/40">
+                        No incorrect answers recorded for this question so far.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
     </div>
   );
