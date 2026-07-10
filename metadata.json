@@ -1,0 +1,6 @@
+{
+  "name": "Quiz App with Google Sheets and Analytics",
+  "description": "A beautifully designed quiz app featuring Google Sheets as a database, interactive leaderboard, dynamic analytics on user struggle points, multiple choice and short answer support, and PDF report exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
