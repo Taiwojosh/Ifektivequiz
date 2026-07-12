@@ -15,7 +15,8 @@ import {
   Award,
   User as UserIcon,
   ChevronLeft,
-  AlertCircle
+  AlertCircle,
+  ExternalLink
 } from 'lucide-react';
 import { getAllQuizzes } from '../quizzes';
 import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow, CandidateResponse, PendingSubmission } from '../types';
@@ -795,10 +796,27 @@ export default function QuizRunner({
               className="flex flex-col justify-between rounded-2xl border border-white/5 bg-[#141414] p-6 shadow-sm hover:border-white/15 hover:shadow-lg transition-all duration-300"
             >
               <div className="space-y-3">
-                <span className="inline-flex items-center space-x-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-0.5 font-mono text-[9px] font-bold text-white/40">
-                  <Clock className="h-3 w-3" />
-                  <span>{quiz.durationMinutes} Minutes</span>
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center space-x-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-0.5 font-mono text-[9px] font-bold text-white/40">
+                    <Clock className="h-3 w-3" />
+                    <span>{quiz.durationMinutes} Minutes</span>
+                  </span>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const url = new URL(window.location.origin + window.location.pathname);
+                      url.searchParams.set('quizId', quiz.id);
+                      navigator.clipboard.writeText(url.toString());
+                      alert('Copied direct quiz link to clipboard!');
+                    }}
+                    className="flex items-center space-x-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all cursor-pointer"
+                    title="Copy Share Link"
+                  >
+                    <ExternalLink className="h-3 w-3 text-indigo-400" />
+                    <span>Share Link</span>
+                  </button>
+                </div>
                 
                 <h3 className="font-serif italic text-lg text-white leading-tight">{quiz.title}</h3>
                 <p className="font-sans text-xs text-white/60 leading-relaxed">{quiz.description}</p>
