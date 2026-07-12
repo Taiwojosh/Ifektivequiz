@@ -246,3 +246,214 @@ export async function fetchResponses(token: string, spreadsheetId: string): Prom
     category: row[8] || 'General',
   }));
 }
+
+/**
+ * Ensures that the required sheets ('Players' and 'Quizzes') exist inside the spreadsheet,
+ * creating them and initializing their headers dynamically if they are missing.
+ */
+export async function ensureSheetsExist(token: string, spreadsheetId: string): Promise<void> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+  if (!response.ok) return;
+
+  const data = await response.json();
+  const existingTitles = data.sheets?.map((s: any) => s.properties?.title) || [];
+
+  const requests: any[] = [];
+  const sheetsToCreate: string[] = [];
+
+  if (!existingTitles.includes('Players')) {
+    sheetsToCreate.push('Players');
+    requests.push({
+      addSheet: {
+        properties: {
+          title: 'Players',
+        }
+      }
+    });
+  }
+
+  if (!existingTitles.includes('Quizzes')) {
+    sheetsToCreate.push('Quizzes');
+    requests.push({
+      addSheet: {
+        properties: {
+          title: 'Quizzes',
+        }
+      }
+    });
+  }
+
+  if (requests.length > 0) {
+    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`;
+    const updateResponse = await fetch(updateUrl, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ requests }),
+    });
+
+    if (updateResponse.ok) {
+      // Initialize headers for newly created sheets
+      const dataUpdate: any[] = [];
+      if (sheetsToCreate.includes('Players')) {
+        dataUpdate.push({
+          range: 'Players!A1:E1',
+          majorDimension: 'ROWS',
+          values: [["Timestamp", "Player Name", "Player Email", "Invited Quiz ID", "Invited Quiz Title"]],
+        });
+      }
+      if (sheetsToCreate.includes('Quizzes')) {
+        dataUpdate.push({
+          range: 'Quizzes!A1:E1',
+          majorDimension: 'ROWS',
+          values: [["Quiz ID", "Title", "Description", "Duration (Minutes)", "Quiz Data JSON"]],
+        });
+      }
+
+      if (dataUpdate.length > 0) {
+        const batchUpdateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`;
+        await fetch(batchUpdateUrl, {
+          method: 'POST',
+          headers: getHeaders(token),
+          body: JSON.stringify({
+            valueInputOption: 'USER_ENTERED',
+            data: dataUpdate,
+          }),
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Saves or updates a custom quiz inside the Quizzes sheet
+ */
+export async function saveQuizToSheets(token: string, spreadsheetId: string, quiz: any): Promise<void> {
+  await ensureSheetsExist(token, spreadsheetId);
+
+  // 1. Fetch current quizzes from Sheets to see if this quiz already exists
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A:A`;
+  const response = await fetch(getUrl, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  let existingIndex = -1;
+  if (response.ok) {
+    const data = await response.json();
+    const rows = data.values || [];
+    // rows[0] is the header, rows[i] is row i+1
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i] && rows[i][0] === quiz.id) {
+        existingIndex = i + 1; // 1-indexed row number
+        break;
+      }
+    }
+  }
+
+  const quizJson = JSON.stringify(quiz);
+  const rowValues = [quiz.id, quiz.title, quiz.description, quiz.durationMinutes, quizJson];
+
+  if (existingIndex !== -1) {
+    // Update existing row
+    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A${existingIndex}:E${existingIndex}?valueInputOption=USER_ENTERED`;
+    await fetch(updateUrl, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        range: `Quizzes!A${existingIndex}:E${existingIndex}`,
+        majorDimension: 'ROWS',
+        values: [rowValues],
+      }),
+    });
+  } else {
+    // Append new row
+    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A:E:append?valueInputOption=USER_ENTERED`;
+    await fetch(appendUrl, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        range: 'Quizzes!A:E',
+        majorDimension: 'ROWS',
+        values: [rowValues],
+      }),
+    });
+  }
+}
+
+/**
+ * Fetches all custom quizzes from the Quizzes sheet
+ */
+export async function fetchQuizzesFromSheets(token: string, spreadsheetId: string): Promise<any[]> {
+  await ensureSheetsExist(token, spreadsheetId);
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A2:E`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const data = await response.json();
+  if (!data.values) return [];
+
+  const quizzes: any[] = [];
+  for (const row of data.values) {
+    if (row && row[4]) {
+      try {
+        const quizObj = JSON.parse(row[4]);
+        quizzes.push(quizObj);
+      } catch (err) {
+        console.error('Failed to parse quiz JSON from sheet row', row, err);
+      }
+    }
+  }
+  return quizzes;
+}
+
+/**
+ * Registers an invited guest player inside the Players sheet
+ */
+export async function savePlayerToSheets(
+  token: string,
+  spreadsheetId: string,
+  playerName: string,
+  quizId: string,
+  quizTitle: string
+): Promise<void> {
+  await ensureSheetsExist(token, spreadsheetId);
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Players!A:E:append?valueInputOption=USER_ENTERED`;
+  const timestamp = new Date().toISOString();
+  const emailPrefix = playerName.toLowerCase().replace(/\s+/g, '');
+  const playerEmail = `${emailPrefix}@eduquery.internal`;
+
+  const payload = {
+    range: 'Players!A:E',
+    majorDimension: 'ROWS',
+    values: [[
+      timestamp,
+      playerName,
+      playerEmail,
+      quizId,
+      quizTitle
+    ]],
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || 'Failed to register player in Google Sheets.');
+  }
+}

@@ -16,23 +16,28 @@ import {
   User as UserIcon,
   ChevronLeft,
   AlertCircle,
-  ExternalLink
+  ExternalLink,
+  Lock
 } from 'lucide-react';
 import { getAllQuizzes } from '../quizzes';
 import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow, CandidateResponse, PendingSubmission } from '../types';
 import { saveLocalScore, saveLocalResponses, savePendingSubmission } from '../utils/localStorageDb';
-import { appendScoreRow, appendResponseRows } from '../sheets';
+import { appendScoreRow, appendResponseRows, fetchQuizzesFromSheets, savePlayerToSheets } from '../sheets';
 
 interface QuizRunnerProps {
   onResultsSubmitted: () => void;
   token?: string | null;
   spreadsheetId?: string | null;
+  onGoogleSignIn?: () => void;
+  isLoggingIn?: boolean;
 }
 
 export default function QuizRunner({
   onResultsSubmitted,
   token,
   spreadsheetId,
+  onGoogleSignIn,
+  isLoggingIn,
 }: QuizRunnerProps) {
   const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
   const [isQuizRunning, setIsQuizRunning] = useState(false);
@@ -50,18 +55,57 @@ export default function QuizRunner({
   const [quizPendingStart, setQuizPendingStart] = useState<Quiz | null>(null);
   const [directLinkQuizId, setDirectLinkQuizId] = useState<string | null>(null);
 
+  const [quizzes, setQuizzes] = useState<Quiz[]>(() => getAllQuizzes());
+  const [isLoadingQuizzes, setIsLoadingQuizzes] = useState(false);
+  const [isRegisteringPlayer, setIsRegisteringPlayer] = useState(false);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const qid = params.get('quizId');
     if (qid) {
       setDirectLinkQuizId(qid);
-      const quiz = getAllQuizzes().find(q => q.id === qid);
+    }
+  }, []);
+
+  useEffect(() => {
+    async function loadQuizzes() {
+      if (token && spreadsheetId) {
+        setIsLoadingQuizzes(true);
+        try {
+          const sheetQuizzes = await fetchQuizzesFromSheets(token, spreadsheetId);
+          if (sheetQuizzes && sheetQuizzes.length > 0) {
+            setQuizzes(prev => {
+              const combined = [...prev];
+              sheetQuizzes.forEach(sq => {
+                const existsIdx = combined.findIndex(q => q.id === sq.id);
+                if (existsIdx !== -1) {
+                  combined[existsIdx] = sq;
+                } else {
+                  combined.push(sq);
+                }
+              });
+              return combined;
+            });
+          }
+        } catch (err) {
+          console.error("Failed to fetch quizzes from Google Sheets:", err);
+        } finally {
+          setIsLoadingQuizzes(false);
+        }
+      }
+    }
+    loadQuizzes();
+  }, [token, spreadsheetId]);
+
+  useEffect(() => {
+    if (directLinkQuizId) {
+      const quiz = quizzes.find(q => q.id === directLinkQuizId);
       if (quiz) {
         setNameInput(localStorage.getItem('eduquery_candidate_name') || '');
         setQuizPendingStart(quiz);
       }
     }
-  }, []);
+  }, [directLinkQuizId, quizzes]);
 
   // Results view states
   const [sessionResults, setSessionResults] = useState<QuizSession | null>(null);
@@ -122,7 +166,7 @@ export default function QuizRunner({
     setIsQuizRunning(true);
   };
 
-  const handleSaveNameAndStart = (e: React.FormEvent) => {
+  const handleSaveNameAndStart = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nameInput.trim()) return;
 
@@ -131,8 +175,18 @@ export default function QuizRunner({
     setCandidateName(trimmedName);
 
     const targetQuiz = quizPendingStart;
-    setQuizPendingStart(null);
     if (targetQuiz) {
+      if (token && spreadsheetId) {
+        setIsRegisteringPlayer(true);
+        try {
+          await savePlayerToSheets(token, spreadsheetId, trimmedName, targetQuiz.id, targetQuiz.title);
+        } catch (err) {
+          console.error("Failed to register player in sheets:", err);
+        } finally {
+          setIsRegisteringPlayer(false);
+        }
+      }
+      setQuizPendingStart(null);
       handleStartQuiz(targetQuiz, trimmedName);
     }
   };
@@ -628,6 +682,53 @@ export default function QuizRunner({
     );
   }
 
+  // If we are a guest opening a direct link but we have no Google login,
+  // prompt them to sign in first so they can access the sheets-based quiz & register.
+  if (directLinkQuizId && spreadsheetId && !token) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16">
+        <div className="rounded-3xl border border-white/10 bg-[#141414] p-6 sm:p-8 shadow-2xl relative overflow-hidden text-center space-y-6">
+          <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+            <Lock className="w-32 h-32" />
+          </div>
+          <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white shadow-inner">
+            <Lock className="h-5 w-5 text-white/95" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="font-serif italic text-xl text-white">Join Quiz Session</h3>
+            <p className="font-sans text-xs text-white/50 leading-relaxed">
+              You've been invited to attempt a quiz. To connect to the database, retrieve custom questions, and record your performance in Google Sheets, please sign in.
+            </p>
+          </div>
+          <button
+            onClick={onGoogleSignIn}
+            disabled={isLoggingIn}
+            className="w-full flex items-center justify-center space-x-2.5 rounded-xl border border-white/10 bg-white/5 px-4 py-3 font-sans text-xs font-semibold uppercase tracking-wider text-white transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50 cursor-pointer"
+          >
+            <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+            </svg>
+            <span>Sign in with Google</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isRegisteringPlayer) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16">
+        <div className="rounded-3xl border border-white/10 bg-[#141414] p-6 sm:p-8 shadow-2xl flex flex-col items-center justify-center space-y-4">
+          <div className="h-10 w-10 rounded-full border-2 border-white/10 border-t-white animate-spin"></div>
+          <p className="font-serif italic text-sm text-white animate-pulse">Registering candidate profile on Google Sheets...</p>
+        </div>
+      </div>
+    );
+  }
+
   // Candidate Name registration gate / Lobby Name setup
   if (quizPendingStart) {
     return (
@@ -789,51 +890,66 @@ export default function QuizRunner({
 
       {/* Quizzes Grid */}
       <div className="grid gap-6 sm:grid-cols-2">
-        {getAllQuizzes()
-          .filter((quiz) => (directLinkQuizId ? quiz.id === directLinkQuizId : true))
-          .map((quiz) => {
-          return (
-            <div 
-              key={quiz.id} 
-              className="flex flex-col justify-between rounded-2xl border border-white/5 bg-[#141414] p-6 shadow-sm hover:border-white/15 hover:shadow-lg transition-all duration-300"
-            >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex items-center space-x-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-0.5 font-mono text-[9px] font-bold text-white/40">
-                    <Clock className="h-3 w-3" />
-                    <span>{quiz.durationMinutes} Minutes</span>
-                  </span>
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const url = new URL(window.location.origin + window.location.pathname);
-                      url.searchParams.set('quizId', quiz.id);
-                      navigator.clipboard.writeText(url.toString());
-                      alert('Copied direct quiz link to clipboard!');
-                    }}
-                    className="flex items-center space-x-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all cursor-pointer"
-                    title="Copy Share Link"
-                  >
-                    <ExternalLink className="h-3 w-3 text-indigo-400" />
-                    <span>Share Link</span>
-                  </button>
-                </div>
-                
-                <h3 className="font-serif italic text-lg text-white leading-tight">{quiz.title}</h3>
-                <p className="font-sans text-xs text-white/60 leading-relaxed">{quiz.description}</p>
-              </div>
-
-              <button
-                onClick={() => handleStartQuiz(quiz)}
-                className="flex items-center justify-center space-x-2 mt-6 w-full rounded-xl bg-white px-4 py-2.5 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm transition-all cursor-pointer"
+        {isLoadingQuizzes ? (
+          <div className="col-span-2 py-12 flex flex-col items-center justify-center text-white/40 space-y-3">
+            <div className="h-8 w-8 rounded-full border-2 border-white/10 border-t-indigo-400 animate-spin"></div>
+            <p className="font-serif italic text-xs">Synchronizing quiz database from Google Sheets...</p>
+          </div>
+        ) : quizzes.length === 0 ? (
+          <div className="col-span-2 rounded-2xl border border-dashed border-white/10 bg-[#121212]/30 p-12 text-center text-white/40 space-y-2">
+            <p className="font-sans text-sm font-semibold">No Quizzes Available</p>
+            <p className="font-sans text-xs">There are no quizzes ready to attempt. Add some in the Admin panel.</p>
+          </div>
+        ) : (
+          quizzes
+            .filter((quiz) => (directLinkQuizId ? quiz.id === directLinkQuizId : true))
+            .map((quiz) => {
+            return (
+              <div 
+                key={quiz.id} 
+                className="flex flex-col justify-between rounded-2xl border border-white/5 bg-[#141414] p-6 shadow-sm hover:border-white/15 hover:shadow-lg transition-all duration-300"
               >
-                <Play className="h-3.5 w-3.5 fill-current" />
-                <span>Begin Quiz Session</span>
-              </button>
-            </div>
-          );
-        })}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center space-x-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-0.5 font-mono text-[9px] font-bold text-white/40">
+                      <Clock className="h-3 w-3" />
+                      <span>{quiz.durationMinutes} Minutes</span>
+                    </span>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const url = new URL(window.location.origin + window.location.pathname);
+                        url.searchParams.set('quizId', quiz.id);
+                        if (spreadsheetId) {
+                          url.searchParams.set('spreadsheetId', spreadsheetId);
+                        }
+                        navigator.clipboard.writeText(url.toString());
+                        alert('Copied direct quiz link to clipboard!');
+                      }}
+                      className="flex items-center space-x-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all cursor-pointer"
+                      title="Copy Share Link"
+                    >
+                      <ExternalLink className="h-3 w-3 text-indigo-400" />
+                      <span>Share Link</span>
+                    </button>
+                  </div>
+                  
+                  <h3 className="font-serif italic text-lg text-white leading-tight">{quiz.title}</h3>
+                  <p className="font-sans text-xs text-white/60 leading-relaxed">{quiz.description}</p>
+                </div>
+
+                <button
+                  onClick={() => handleStartQuiz(quiz)}
+                  className="flex items-center justify-center space-x-2 mt-6 w-full rounded-xl bg-white px-4 py-2.5 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm transition-all cursor-pointer"
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <span>Begin Quiz Session</span>
+                </button>
+              </div>
+            );
+          })
+        )}
       </div>
 
     </div>

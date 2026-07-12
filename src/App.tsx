@@ -26,6 +26,11 @@ export default function App() {
     if (params.has('quizId')) {
       setIsDirectLink(true);
     }
+    const urlSpreadsheetId = params.get('spreadsheetId');
+    if (urlSpreadsheetId) {
+      localStorage.setItem('eduquery_spreadsheet_id', urlSpreadsheetId);
+      setSpreadsheetId(urlSpreadsheetId);
+    }
   }, []);
 
   // Google Sheets token and database configuration state
@@ -96,6 +101,10 @@ export default function App() {
         return (
           <QuizRunner
             onResultsSubmitted={handleResultsSubmitted}
+            token={token}
+            spreadsheetId={spreadsheetId}
+            onGoogleSignIn={handleGoogleSignIn}
+            isLoggingIn={isLoggingIn}
           />
         );
       case 'leaderboard':

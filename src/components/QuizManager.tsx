@@ -24,7 +24,7 @@ import {
   saveLocalScore, 
   saveLocalResponses 
 } from '../utils/localStorageDb';
-import { appendScoreRow, appendResponseRows } from '../sheets';
+import { appendScoreRow, appendResponseRows, saveQuizToSheets } from '../sheets';
 
 interface QuizManagerProps {
   token?: string | null;
@@ -99,7 +99,7 @@ export default function QuizManager({
     reader.readAsText(file);
   };
 
-  const handleImport = () => {
+  const handleImport = async () => {
     setError(null);
     setSuccess(null);
     try {
@@ -131,9 +131,21 @@ export default function QuizManager({
       }
 
       quizzesToAdd.forEach(q => addCustomQuiz(q));
+
+      // Save custom quizzes to Google Sheets as well if connected
+      if (token && spreadsheetId) {
+        for (const quiz of quizzesToAdd) {
+          try {
+            await saveQuizToSheets(token, spreadsheetId, quiz);
+          } catch (sheetsErr: any) {
+            console.error('Failed to sync quiz to Google Sheets:', sheetsErr);
+          }
+        }
+      }
+
       setCustomQuizzes(getCustomQuizzes());
       setJsonInput('');
-      setSuccess(`Successfully added ${quizzesToAdd.length} quiz(zes).`);
+      setSuccess(`Successfully added ${quizzesToAdd.length} quiz(zes)${token && spreadsheetId ? ' and synchronized with Google Sheets' : ''}.`);
     } catch (e: any) {
       setError(e.message || "Invalid JSON format.");
     }
@@ -740,11 +752,21 @@ export default function QuizManager({
                     </div>
                     <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button 
-                        onClick={() => {
-                          const url = new URL(window.location.href);
+                        onClick={async () => {
+                          if (token && spreadsheetId) {
+                            try {
+                              await saveQuizToSheets(token, spreadsheetId, quiz);
+                            } catch (err) {
+                              console.error('Failed to auto-sync quiz to sheets:', err);
+                            }
+                          }
+                          const url = new URL(window.location.origin + window.location.pathname);
                           url.searchParams.set('quizId', quiz.id);
+                          if (spreadsheetId) {
+                            url.searchParams.set('spreadsheetId', spreadsheetId);
+                          }
                           navigator.clipboard.writeText(url.toString());
-                          alert('Copied direct link to clipboard!');
+                          alert('Synced with Google Sheets and copied direct link to clipboard!');
                         }}
                         className="p-2 text-white/30 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer"
                         title="Copy Direct Link"
@@ -774,9 +796,19 @@ export default function QuizManager({
                       <h4 className="text-white/80 text-sm font-medium">{quiz.title}</h4>
                     </div>
                     <button 
-                      onClick={() => {
-                        const url = new URL(window.location.href);
+                      onClick={async () => {
+                        if (token && spreadsheetId) {
+                          try {
+                            await saveQuizToSheets(token, spreadsheetId, quiz);
+                          } catch (err) {
+                            console.error('Failed to auto-sync quiz to sheets:', err);
+                          }
+                        }
+                        const url = new URL(window.location.origin + window.location.pathname);
                         url.searchParams.set('quizId', quiz.id);
+                        if (spreadsheetId) {
+                          url.searchParams.set('spreadsheetId', spreadsheetId);
+                        }
                         navigator.clipboard.writeText(url.toString());
                         alert('Copied direct link to clipboard!');
                       }}
