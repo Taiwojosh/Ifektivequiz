@@ -1,16 +1,66 @@
-import React, { useState } from 'react';
-import { Quiz } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Quiz, PendingSubmission, SheetScoreRow, SheetResponseRow } from '../types';
 import { addCustomQuiz, getCustomQuizzes, deleteCustomQuiz, DEFAULT_QUIZZES } from '../quizzes';
-import { FileJson, PlusCircle, Trash2, Copy, CheckCircle2 } from 'lucide-react';
+import { 
+  FileJson, 
+  PlusCircle, 
+  Trash2, 
+  CheckCircle2, 
+  ClipboardCheck, 
+  BookOpen, 
+  Check, 
+  X, 
+  ChevronLeft,
+  Award,
+  AlertTriangle,
+  Clock,
+  User,
+  ExternalLink,
+  Loader2
+} from 'lucide-react';
+import { 
+  getPendingSubmissions, 
+  savePendingSubmissions, 
+  saveLocalScore, 
+  saveLocalResponses 
+} from '../utils/localStorageDb';
+import { appendScoreRow, appendResponseRows } from '../sheets';
 
-export default function QuizManager() {
+interface QuizManagerProps {
+  token?: string | null;
+  spreadsheetId?: string | null;
+}
+
+export default function QuizManager({
+  token,
+  spreadsheetId,
+}: QuizManagerProps) {
+  // Navigation subtabs
+  const [subTab, setSubTab] = useState<'grading' | 'quizzes'>('grading');
+  
+  // Custom Quiz States
   const [jsonInput, setJsonInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [customQuizzes, setCustomQuizzes] = useState<Quiz[]>(getCustomQuizzes());
-  const [copied, setCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
+  // Grading Portal States
+  const [pendingSubmissions, setPendingSubmissions] = useState<PendingSubmission[]>([]);
+  const [selectedSubmission, setSelectedSubmission] = useState<PendingSubmission | null>(null);
+  const [gradingResponses, setGradingResponses] = useState<Record<string, boolean>>({});
+  const [isPublishing, setIsPublishing] = useState(false);
+
+  // Sync pending submissions from local storage
+  const loadPending = () => {
+    setPendingSubmissions(getPendingSubmissions());
+  };
+
+  useEffect(() => {
+    loadPending();
+  }, [subTab]);
+
+  // Drag and drop for JSON custom quizzes
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -49,38 +99,6 @@ export default function QuizManager() {
     reader.readAsText(file);
   };
 
-  const exampleQuiz: Quiz = {
-    id: "example-quiz-id",
-    title: "Example Custom Quiz",
-    description: "This is an example quiz.",
-    durationMinutes: 5,
-    questions: [
-      {
-        id: "q1",
-        text: "What is 2 + 2?",
-        type: "mcq",
-        options: ["3", "4", "5", "6"],
-        correctAnswer: "4",
-        category: "Math",
-        explanation: "Simple arithmetic."
-      },
-      {
-        id: "q2",
-        text: "What is the capital of France?",
-        type: "short",
-        correctAnswer: "Paris",
-        category: "Geography",
-        explanation: "Paris is the capital of France."
-      }
-    ]
-  };
-
-  const handleCopyExample = () => {
-    navigator.clipboard.writeText(JSON.stringify(exampleQuiz, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   const handleImport = () => {
     setError(null);
     setSuccess(null);
@@ -91,7 +109,6 @@ export default function QuizManager() {
       
       const parsed = JSON.parse(jsonInput);
       
-      // Basic validation
       const validateQuiz = (q: any): q is Quiz => {
         if (!q.id || !q.title || !q.questions || !Array.isArray(q.questions)) {
           return false;
@@ -140,7 +157,7 @@ export default function QuizManager() {
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; 
   };
 
   const handleDelete = (id: string) => {
@@ -149,130 +166,539 @@ export default function QuizManager() {
     setSuccess("Quiz deleted successfully.");
   };
 
+  // Grading Queue Helpers
+  const handleSelectSubmission = (sub: PendingSubmission) => {
+    setSelectedSubmission(sub);
+    const initialGrading: Record<string, boolean> = {};
+    sub.responses.forEach(resp => {
+      // Default to auto-calculated check, but admin can toggle
+      initialGrading[resp.questionId] = resp.isCorrect ?? false;
+    });
+    setGradingResponses(initialGrading);
+  };
+
+  const toggleQuestionGrading = (qId: string, value: boolean) => {
+    setGradingResponses(prev => ({
+      ...prev,
+      [qId]: value
+    }));
+  };
+
+  const handlePublishGrade = async (sub: PendingSubmission) => {
+    setIsPublishing(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      let correctCount = 0;
+      const finalResponses = sub.responses.map(resp => {
+        const isCorrect = gradingResponses[resp.questionId] ?? false;
+        if (isCorrect) correctCount++;
+        return {
+          ...resp,
+          isCorrect
+        };
+      });
+
+      const totalQuestions = sub.responses.length;
+      const percentage = Math.round((correctCount / totalQuestions) * 100);
+
+      const scoreRow: SheetScoreRow = {
+        timestamp: sub.timestamp,
+        userName: sub.userName,
+        userEmail: sub.userEmail,
+        score: correctCount,
+        totalQuestions,
+        percentage,
+        timeTakenSeconds: sub.timeTakenSeconds
+      };
+
+      const responseRows: SheetResponseRow[] = finalResponses.map((resp, idx) => ({
+        timestamp: sub.timestamp,
+        userEmail: sub.userEmail,
+        questionIndex: idx + 1,
+        questionText: resp.questionText,
+        type: resp.questionType,
+        userAnswer: resp.userAnswer,
+        correctAnswer: resp.correctAnswer,
+        isCorrect: resp.isCorrect,
+        category: resp.category
+      }));
+
+      // Write to Google Sheets cloud first if connected
+      if (token && spreadsheetId) {
+        try {
+          await appendScoreRow(token, spreadsheetId, scoreRow);
+          await appendResponseRows(token, spreadsheetId, responseRows);
+        } catch (err: any) {
+          console.error('Failed to sync to Google Sheets:', err);
+          throw new Error(`Grade submission failed to sync with Google Sheets: ${err?.message || err}. Local save cancelled to preserve database integrity.`);
+        }
+      }
+
+      // Save finalized grade to local storage leaderboard and analytics
+      saveLocalScore(scoreRow);
+      saveLocalResponses(responseRows);
+
+      // Remove from pending submissions list
+      const allPending = getPendingSubmissions();
+      const updatedPending = allPending.filter(p => p.id !== sub.id);
+      savePendingSubmissions(updatedPending);
+      setPendingSubmissions(updatedPending);
+
+      // Reset states
+      setSelectedSubmission(null);
+      setSuccess(`Successfully graded ${sub.userName}'s quiz! Published ${correctCount}/${totalQuestions} score to the Leaderboard${spreadsheetId ? ' (Synchronized with Google Sheets)' : ''}.`);
+      setTimeout(() => setSuccess(null), 6000);
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || 'An error occurred while publishing the grade.');
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
-      <div>
-        <h2 className="text-2xl font-bold text-white tracking-tight">Manage Quizzes</h2>
-        <p className="text-white/60 mt-1">Import custom quizzes via JSON to test your team or class.</p>
+    <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8 space-y-8 animate-in fade-in duration-300">
+      
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-white/10 pb-6 gap-4">
+        <div>
+          <h2 className="font-serif text-2xl font-normal italic tracking-tight text-white sm:text-3xl">Administrator Command Portal</h2>
+          <p className="mt-1 font-sans text-xs uppercase tracking-wider text-white/50">
+            Determine and authorize student grades, manage quiz banks, and import custom curriculum questions.
+          </p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="space-y-6">
-          <div 
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`rounded-2xl border p-6 shadow-xl relative overflow-hidden transition-all duration-200 ${
-              isDragging 
-                ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]' 
-                : 'border-white/10 bg-[#1A1A1A]'
-            }`}
-          >
-            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-              <FileJson className="w-32 h-32" />
-            </div>
-            <h3 className="text-lg font-semibold text-white mb-4 relative z-10 flex items-center space-x-2">
-              <PlusCircle className="w-5 h-5 text-indigo-400" />
-              <span>Import via JSON</span>
-            </h3>
-            
-            <div className="space-y-4 relative z-10">
-              <div className="flex justify-between items-end">
-                <label className="block text-sm font-medium text-white/70">
-                  {isDragging ? 'Drop your JSON file here!' : 'Raw JSON'}
-                </label>
-                <label className="cursor-pointer inline-flex items-center space-x-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
-                  <span>Upload File Instead</span>
-                  <input type="file" accept=".json" className="hidden" onChange={handleFileUpload} />
-                </label>
-              </div>
-              <textarea
-                value={jsonInput}
-                onChange={(e) => setJsonInput(e.target.value)}
-                placeholder="Paste quiz JSON here..."
-                className="w-full h-48 rounded-xl border border-white/10 bg-black/50 p-4 font-mono text-sm text-white/90 placeholder:text-white/30 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-              />
-              
-              {error && (
-                <div className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-lg border border-red-400/20">
-                  {error}
-                </div>
-              )}
-              {success && (
-                <div className="text-emerald-400 text-sm font-medium bg-emerald-400/10 p-3 rounded-lg border border-emerald-400/20 flex items-center space-x-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>{success}</span>
-                </div>
-              )}
+      {/* Primary Subtabs Navigation */}
+      <div className="flex border-b border-white/10 mb-2 space-x-6">
+        <button 
+          onClick={() => {
+            setSubTab('grading');
+            setSelectedSubmission(null);
+          }} 
+          className={`pb-3 font-mono text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center space-x-2 ${
+            subTab === 'grading' 
+              ? 'border-white text-white' 
+              : 'border-transparent text-white/40 hover:text-white/80'
+          }`}
+        >
+          <ClipboardCheck className="h-4 w-4" />
+          <span>Grading Queue ({pendingSubmissions.filter(s => s.status === 'pending').length})</span>
+        </button>
+        <button 
+          onClick={() => {
+            setSubTab('quizzes');
+            setSelectedSubmission(null);
+          }} 
+          className={`pb-3 font-mono text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center space-x-2 ${
+            subTab === 'quizzes' 
+              ? 'border-white text-white' 
+              : 'border-transparent text-white/40 hover:text-white/80'
+          }`}
+        >
+          <BookOpen className="h-4 w-4" />
+          <span>Quiz Library & Import</span>
+        </button>
+      </div>
 
-              <button
-                onClick={handleImport}
-                disabled={!jsonInput.trim()}
-                className="w-full rounded-xl bg-indigo-500 px-4 py-3 font-semibold text-white transition-all hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-500/20"
-              >
-                Import Quiz
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-md font-semibold text-white">JSON Format Example</h3>
-              <button 
-                onClick={handleCopyExample}
-                className="text-xs flex items-center space-x-1 text-white/50 hover:text-white transition-colors bg-white/5 px-2 py-1 rounded border border-white/10"
-              >
-                {copied ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                <span>{copied ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-            <pre className="text-xs font-mono text-white/60 bg-black/50 p-4 rounded-xl border border-white/5 overflow-auto max-h-60">
-              {JSON.stringify(exampleQuiz, null, 2)}
-            </pre>
-          </div>
+      {/* Success Notifications Banner */}
+      {success && (
+        <div className="text-emerald-400 text-sm font-medium bg-emerald-400/10 p-4 rounded-xl border border-emerald-400/20 flex items-center space-x-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
+          <CheckCircle2 className="w-5 h-5 shrink-0" />
+          <span>{success}</span>
         </div>
+      )}
 
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-white">Your Custom Quizzes</h3>
-          {customQuizzes.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/20 p-8 text-center bg-white/5">
-              <p className="text-white/40 font-medium">No custom quizzes found.</p>
-              <p className="text-white/30 text-sm mt-1">Import one to get started.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {customQuizzes.map(quiz => (
-                <div key={quiz.id} className="rounded-xl border border-white/10 bg-black/40 p-4 flex items-center justify-between group hover:border-white/20 transition-colors">
-                  <div>
-                    <h4 className="text-white font-medium">{quiz.title}</h4>
-                    <p className="text-white/50 text-xs mt-1">{quiz.questions.length} questions • {quiz.durationMinutes} mins</p>
-                  </div>
+      {/* SUBTAB 1: GRADING PORTAL */}
+      {subTab === 'grading' && (
+        <div className="space-y-6">
+          
+          {selectedSubmission ? (
+            /* ACTIVE GRADING WORKSPACE PANEL */
+            <div className="rounded-3xl border border-white/10 bg-[#121212] p-6 sm:p-8 shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+              
+              {/* Grading Workspace Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-white/5 pb-6 gap-4">
+                <div className="flex items-center space-x-3.5">
                   <button 
-                    onClick={() => handleDelete(quiz.id)}
-                    className="p-2 text-white/30 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                    title="Delete Quiz"
+                    onClick={() => setSelectedSubmission(null)}
+                    className="p-2 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-colors"
+                    title="Return to Queue"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                  <div>
+                    <span className="font-mono text-[9px] uppercase tracking-wider text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-md">
+                      Manual Grading Session
+                    </span>
+                    <h3 className="font-serif italic text-xl text-white mt-1">
+                      Grading: {selectedSubmission.userName}
+                    </h3>
+                    <p className="font-sans text-xs text-white/40 mt-0.5">
+                      Candidate Email: {selectedSubmission.userEmail}  |  Quiz: <strong>{selectedSubmission.quizTitle}</strong>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/5 bg-white/5 px-4 py-2.5 flex items-center space-x-6">
+                  <div>
+                    <span className="block font-mono text-[9px] text-white/40 uppercase">Time Spent</span>
+                    <span className="font-sans font-bold text-white text-sm">{formatTime(selectedSubmission.timeTakenSeconds)}</span>
+                  </div>
+                  <div className="h-8 w-[1px] bg-white/10" />
+                  <div>
+                    <span className="block font-mono text-[9px] text-white/40 uppercase font-bold">Dynamic Score</span>
+                    <span className="font-serif text-lg italic font-bold text-white leading-none">
+                      {Object.values(gradingResponses).filter(Boolean).length} / {selectedSubmission.responses.length}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Individual Question Answers Grading Grid */}
+              <div className="space-y-6">
+                <h4 className="font-mono text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                  Assess Student Answers & Overrides
+                </h4>
+
+                {selectedSubmission.responses.map((resp, idx) => {
+                  const isMarkedCorrect = gradingResponses[resp.questionId] ?? false;
+                  
+                  return (
+                    <div key={resp.questionId} className="rounded-2xl border border-white/5 bg-[#171717] p-5 space-y-4 shadow-sm relative overflow-hidden">
+                      
+                      {/* Top metadata */}
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-white/40 font-bold">
+                          QUESTION {idx + 1} • <span className="uppercase">{resp.category}</span>
+                        </span>
+                        <span className="inline-flex items-center rounded-md bg-white/5 border border-white/10 px-2 py-0.5 font-mono text-[9px] font-semibold text-white/50 uppercase">
+                          {resp.questionType === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                        </span>
+                      </div>
+
+                      {/* Question Text */}
+                      <p className="font-sans text-sm font-semibold text-white leading-snug">{resp.questionText}</p>
+
+                      {/* Comparison blocks */}
+                      <div className="grid sm:grid-cols-2 gap-3">
+                        <div className="rounded-xl p-3 bg-white/5 border border-white/10 text-white text-xs space-y-1">
+                          <span className="font-mono text-[9px] uppercase font-bold text-white/30 block">Candidate's Answer</span>
+                          <span className="font-sans font-semibold text-white/90 break-all">
+                            "{resp.userAnswer || '[Skipped]'}"
+                          </span>
+                        </div>
+
+                        <div className="rounded-xl p-3 bg-emerald-500/5 border border-emerald-500/15 text-emerald-400 text-xs space-y-1">
+                          <span className="font-mono text-[9px] uppercase font-bold text-white/30 block">Answer Key / Rubric</span>
+                          <span className="font-sans font-semibold text-emerald-300 break-all">
+                            "{resp.correctAnswer}"
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Manual Grading Toggle Toggles */}
+                      <div className="flex items-center justify-between border-t border-white/5 pt-4">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-sans text-xs text-white/40">Suggested grade:</span>
+                          <span className={`font-mono text-[10px] font-bold uppercase rounded px-1.5 py-0.5 ${
+                            resp.userAnswer.toLowerCase() === resp.correctAnswer.toLowerCase()
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-rose-500/10 text-rose-400'
+                          }`}>
+                            {resp.userAnswer.toLowerCase() === resp.correctAnswer.toLowerCase() ? 'Auto-Correct' : 'Auto-Incorrect'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleQuestionGrading(resp.questionId, false)}
+                            className={`flex items-center space-x-1 px-3.5 py-1.5 rounded-xl border font-sans text-xs font-semibold cursor-pointer transition-all ${
+                              !isMarkedCorrect
+                                ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 font-bold shadow-sm'
+                                : 'bg-transparent border-white/10 text-white/40 hover:text-white/60'
+                            }`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                            <span>Incorrect</span>
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => toggleQuestionGrading(resp.questionId, true)}
+                            className={`flex items-center space-x-1 px-3.5 py-1.5 rounded-xl border font-sans text-xs font-semibold cursor-pointer transition-all ${
+                              isMarkedCorrect
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold shadow-sm'
+                                : 'bg-transparent border-white/10 text-white/40 hover:text-white/60'
+                            }`}
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                            <span>Correct</span>
+                          </button>
+                        </div>
+                      </div>
+
+                    </div>
+                  );
+                })}
+              </div>
+
+              {error && (
+                <div className="flex items-start space-x-2 rounded-xl border border-rose-500/20 bg-rose-500/10 p-4 font-sans text-xs text-rose-400 mb-6">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              {/* Grade Submission Action Bar */}
+              <div className="border-t border-white/5 pt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div className="space-y-1">
+                  <h4 className="font-sans text-xs font-bold text-white/70">Final Verification Checklist</h4>
+                  <p className="font-sans text-[11px] text-white/40 leading-relaxed">
+                    By submitting this grade, the results will immediately be compiled, saved, and published to the public student Leaderboard and the struggle metrics on Analytics.
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <button
+                    onClick={() => setSelectedSubmission(null)}
+                    disabled={isPublishing}
+                    className="rounded-xl border border-white/15 px-5 py-2.5 font-sans text-xs font-bold text-white hover:bg-white/5 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handlePublishGrade(selectedSubmission)}
+                    disabled={isPublishing}
+                    className="flex items-center space-x-1.5 rounded-xl bg-emerald-500 px-6 py-2.5 font-sans text-xs font-bold text-black hover:bg-emerald-400 transition-all cursor-pointer shadow-lg shadow-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isPublishing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Publishing to Database...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Award className="h-4 w-4" />
+                        <span>Publish Score & Post Leaderboard</span>
+                      </>
+                    )}
                   </button>
                 </div>
-              ))}
+              </div>
+
+            </div>
+          ) : (
+            /* PENDING GRADING QUEUE LIST */
+            <div className="space-y-4">
+              
+              {pendingSubmissions.length === 0 ? (
+                /* EMPTY QUEUE STATE */
+                <div className="rounded-2xl border border-dashed border-white/10 bg-[#121212]/30 p-12 text-center space-y-6 max-w-md mx-auto my-12">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/30">
+                    <ClipboardCheck className="h-6 w-6" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h4 className="font-sans text-sm font-bold text-white">All Caught Up!</h4>
+                    <p className="font-sans text-xs text-white/40 leading-relaxed">
+                      There are currently no student quiz submissions waiting to be graded. Any attempts taken by candidates will flow here in real-time.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                /* LIST OF ACTIVE PENDING SUBMISSIONS */
+                <div className="space-y-3">
+                  <h3 className="font-sans text-xs font-bold text-white/50 uppercase tracking-widest">
+                    Awaiting Manual Grade Verification
+                  </h3>
+                  
+                  {pendingSubmissions.map(sub => {
+                    return (
+                      <div 
+                        key={sub.id} 
+                        className="rounded-2xl border border-white/15 bg-[#141414] p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:border-white/20 transition-all shadow-sm"
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-serif italic text-base text-white font-medium">{sub.userName}</span>
+                            <span className="font-mono text-[9px] text-white/40">({sub.userEmail})</span>
+                          </div>
+                          
+                          <div className="flex flex-wrap items-center gap-y-1 gap-x-4 text-xs text-white/50">
+                            <span className="font-semibold text-white/70">Quiz: {sub.quizTitle}</span>
+                            <span className="hidden sm:inline text-white/20">•</span>
+                            <span className="flex items-center space-x-1">
+                              <Clock className="h-3 w-3 text-white/40" />
+                              <span>{formatTime(sub.timeTakenSeconds)} seconds</span>
+                            </span>
+                            <span className="hidden sm:inline text-white/20">•</span>
+                            <span>{new Date(sub.timestamp).toLocaleString()}</span>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleSelectSubmission(sub)}
+                          className="sm:self-center self-start flex items-center space-x-1 rounded-xl bg-white px-4 py-2 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm cursor-pointer transition-all"
+                        >
+                          <span>Grade Submission</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
             </div>
           )}
 
-          <div className="mt-8">
-            <h3 className="text-sm font-semibold text-white/70 mb-3">Built-in Quizzes (Read-only)</h3>
-            <div className="space-y-2">
-              {DEFAULT_QUIZZES.map(quiz => (
-                <div key={quiz.id} className="rounded-lg border border-white/5 bg-white/5 p-3 flex items-center justify-between opacity-70">
-                  <div>
-                    <h4 className="text-white/80 text-sm font-medium">{quiz.title}</h4>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
-      </div>
+      )}
+
+      {/* SUBTAB 2: QUIZ MANAGEMENT */}
+      {subTab === 'quizzes' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          
+          <div className="space-y-6">
+            
+            {/* Importer Panel */}
+            <div 
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`rounded-2xl border p-6 shadow-xl relative overflow-hidden transition-all duration-200 ${
+                isDragging 
+                  ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]' 
+                  : 'border-white/10 bg-[#141414]'
+              }`}
+            >
+              <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+                <FileJson className="w-32 h-32 text-white" />
+              </div>
+              
+              <h3 className="text-lg font-semibold text-white mb-4 relative z-10 flex items-center space-x-2">
+                <PlusCircle className="w-5 h-5 text-indigo-400" />
+                <span>Import Custom Quiz</span>
+              </h3>
+              
+              <div className="space-y-4 relative z-10">
+                <div className="flex justify-between items-end">
+                  <label className="block text-xs font-medium text-white/70">
+                    {isDragging ? 'Drop your JSON file here!' : 'Raw Quiz JSON Data'}
+                  </label>
+                  <label className="cursor-pointer inline-flex items-center space-x-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                    <span>Upload File Instead</span>
+                    <input type="file" accept=".json" className="hidden" onChange={handleFileUpload} />
+                  </label>
+                </div>
+                
+                <textarea
+                  value={jsonInput}
+                  onChange={(e) => setJsonInput(e.target.value)}
+                  placeholder='Paste quiz JSON representation here...'
+                  className="w-full h-48 rounded-xl border border-white/10 bg-black/50 p-4 font-mono text-xs text-white/90 placeholder:text-white/30 focus:border-white/30 focus:outline-none focus:ring-0"
+                />
+                
+                {error && (
+                  <div className="text-red-400 text-xs font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleImport}
+                  disabled={!jsonInput.trim()}
+                  className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-black hover:bg-white/90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md cursor-pointer"
+                >
+                  Import Quiz
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          <div className="space-y-4">
+            
+            {/* Custom Quizzes */}
+            <h3 className="text-lg font-semibold text-white">Your Custom Quizzes</h3>
+            {customQuizzes.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/20 p-8 text-center bg-white/5">
+                <p className="text-white/40 font-medium">No custom quizzes found.</p>
+                <p className="text-white/30 text-xs mt-1">Import one to get started.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {customQuizzes.map(quiz => (
+                  <div key={quiz.id} className="rounded-xl border border-white/10 bg-black/40 p-4 flex items-center justify-between group hover:border-white/20 transition-colors">
+                    <div>
+                      <h4 className="text-white font-medium">{quiz.title}</h4>
+                      <p className="text-white/50 text-xs mt-1">{quiz.questions.length} questions • {quiz.durationMinutes} mins</p>
+                    </div>
+                    <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={() => {
+                          const url = new URL(window.location.href);
+                          url.searchParams.set('quizId', quiz.id);
+                          navigator.clipboard.writeText(url.toString());
+                          alert('Copied direct link to clipboard!');
+                        }}
+                        className="p-2 text-white/30 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer"
+                        title="Copy Direct Link"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(quiz.id)}
+                        className="p-2 text-white/30 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors cursor-pointer"
+                        title="Delete Quiz"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Read Only Built-ins */}
+            <div className="mt-8">
+              <h3 className="text-sm font-semibold text-white/70 mb-3">Built-in Quizzes (Read-only)</h3>
+              <div className="space-y-2">
+                {DEFAULT_QUIZZES.map(quiz => (
+                  <div key={quiz.id} className="rounded-lg border border-white/5 bg-[#141414] p-3 flex items-center justify-between opacity-70 hover:opacity-100 group transition-opacity">
+                    <div>
+                      <h4 className="text-white/80 text-sm font-medium">{quiz.title}</h4>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        const url = new URL(window.location.href);
+                        url.searchParams.set('quizId', quiz.id);
+                        navigator.clipboard.writeText(url.toString());
+                        alert('Copied direct link to clipboard!');
+                      }}
+                      className="p-1.5 text-white/30 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+                      title="Copy Direct Link"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
     </div>
   );
 }

@@ -65,3 +65,26 @@ export interface SheetResponseRow {
   isCorrect: boolean;
   category: string;
 }
+
+export interface CandidateResponse {
+  questionId: string;
+  questionText: string;
+  questionType: 'mcq' | 'short';
+  category: string;
+  userAnswer: string;
+  correctAnswer: string;
+  isCorrect?: boolean; // determined by admin
+}
+
+export interface PendingSubmission {
+  id: string; // unique ID
+  quizId: string;
+  quizTitle: string;
+  userName: string;
+  userEmail: string;
+  responses: CandidateResponse[];
+  timeTakenSeconds: number;
+  timestamp: string;
+  status: 'pending' | 'graded';
+}
+

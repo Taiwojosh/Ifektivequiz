@@ -20,13 +20,20 @@ import {
   AlertTriangle, 
   Award,
   Users,
-  TrendingUp
+  TrendingUp,
+  Loader2,
+  CheckCircle,
+  Database,
+  AlertCircle
 } from 'lucide-react';
 import { SheetResponseRow } from '../types';
 import { getLocalResponses } from '../utils/localStorageDb';
+import { fetchResponses } from '../sheets';
 
 interface AnalyticsProps {
   refreshTrigger: number;
+  token?: string | null;
+  spreadsheetId?: string | null;
 }
 
 interface QuestionMetrics {
@@ -72,21 +79,45 @@ const LOCAL_RESPONSE_MOCKS: SheetResponseRow[] = [
 
 export default function Analytics({
   refreshTrigger,
+  token,
+  spreadsheetId,
 }: AnalyticsProps) {
   const [rawData, setRawData] = useState<SheetResponseRow[]>([]);
   const [metrics, setMetrics] = useState<QuestionMetrics[]>([]);
   const [showDemoData, setShowDemoData] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const loadAnalyticsData = () => {
-    const local = getLocalResponses();
-    const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
-    setRawData(combined);
-    processMetrics(combined);
+  const loadAnalyticsData = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      if (token && spreadsheetId) {
+        const sheetResponses = await fetchResponses(token, spreadsheetId);
+        const combined = showDemoData ? [...sheetResponses, ...LOCAL_RESPONSE_MOCKS] : sheetResponses;
+        setRawData(combined);
+        processMetrics(combined);
+      } else {
+        const local = getLocalResponses();
+        const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
+        setRawData(combined);
+        processMetrics(combined);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError('Failed to fetch detailed responses from Google Sheets. Displaying local cache.');
+      const local = getLocalResponses();
+      const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
+      setRawData(combined);
+      processMetrics(combined);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
     loadAnalyticsData();
-  }, [refreshTrigger, showDemoData]);
+  }, [refreshTrigger, showDemoData, token, spreadsheetId]);
 
   const processMetrics = (data: SheetResponseRow[]) => {
     // Group by unique question text
@@ -184,7 +215,7 @@ export default function Analytics({
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(156, 163, 175);
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}  |  Database Source: Local Sandbox`, margin, 26);
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}  |  Database Source: ${spreadsheetId ? 'Google Sheets Database' : 'Local Sandbox'}`, margin, 26);
     doc.text(`Target Audience: Quiz Administrators & Instructors`, margin, 31);
 
     y = 52;
@@ -257,6 +288,15 @@ export default function Analytics({
         </div>
 
         <div className="flex items-center space-x-2">
+          <div className={`hidden sm:inline-flex items-center space-x-1.5 rounded-full border px-3.5 py-1.5 font-sans text-xs ${
+            spreadsheetId 
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+              : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+          }`}>
+            <CheckCircle className="h-3.5 w-3.5 shrink-0" />
+            <span>{spreadsheetId ? 'Google Sheets DB Active' : 'Offline Local Engine'}</span>
+          </div>
+
           <button
             onClick={() => setShowDemoData(prev => !prev)}
             className="flex items-center space-x-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 font-sans text-xs font-semibold text-white/80 hover:bg-white/10 transition-all cursor-pointer"
@@ -275,6 +315,13 @@ export default function Analytics({
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="flex items-start space-x-2 rounded-xl border border-rose-500/20 bg-rose-500/10 p-4 font-sans text-xs text-rose-400 mb-6">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {rawData.length === 0 ? (
         <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-6 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">

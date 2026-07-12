@@ -9,13 +9,55 @@ import QuizRunner from './components/QuizRunner';
 import Leaderboard from './components/Leaderboard';
 import Analytics from './components/Analytics';
 import QuizManager from './components/QuizManager';
+import DatabaseConfig from './components/DatabaseConfig';
 import { AlertCircle, HelpCircle, Lock, ShieldAlert, X } from 'lucide-react';
+import { initAuth, googleSignIn } from './firebase';
 
 export default function App() {
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
     return localStorage.getItem('eduquery_admin_logged_in') === 'true';
   });
-  const [activeTab, setActiveTab] = useState<'quiz' | 'leaderboard' | 'analytics' | 'manage'>('quiz');
+  const [activeTab, setActiveTab] = useState<'quiz' | 'leaderboard' | 'analytics' | 'manage' | 'database'>('quiz');
+  
+  const [isDirectLink, setIsDirectLink] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('quizId')) {
+      setIsDirectLink(true);
+    }
+  }, []);
+
+  // Google Sheets token and database configuration state
+  const [token, setToken] = useState<string | null>(null);
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
+    return localStorage.getItem('eduquery_spreadsheet_id');
+  });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (_user, retrievedToken) => {
+        setToken(retrievedToken);
+      },
+      () => {
+        setToken(null);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleSignIn = async () => {
+    setIsLoggingIn(true);
+    try {
+      await googleSignIn();
+    } catch (err) {
+      console.error(err);
+      alert('Sign-in failed. Please ensure popup blocks are disabled or try launching in a new tab.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
   
   // Incremented whenever a quiz ends, prompting leaderboard & analytics components to reload
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -39,7 +81,7 @@ export default function App() {
   const handleAdminLogout = () => {
     setIsAdmin(false);
     localStorage.removeItem('eduquery_admin_logged_in');
-    if (activeTab === 'analytics' || activeTab === 'manage') {
+    if (activeTab === 'analytics' || activeTab === 'manage' || activeTab === 'database') {
       setActiveTab('quiz');
     }
   };
@@ -60,12 +102,16 @@ export default function App() {
         return (
           <Leaderboard
             refreshTrigger={refreshTrigger}
+            token={token}
+            spreadsheetId={spreadsheetId}
           />
         );
       case 'analytics':
         return isAdmin ? (
           <Analytics
             refreshTrigger={refreshTrigger}
+            token={token}
+            spreadsheetId={spreadsheetId}
           />
         ) : (
           <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
@@ -81,11 +127,35 @@ export default function App() {
         );
       case 'manage':
         return isAdmin ? (
-          <QuizManager />
+          <QuizManager
+            token={token}
+            spreadsheetId={spreadsheetId}
+          />
         ) : (
           <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
             <ShieldAlert className="h-10 w-10 text-rose-500 animate-bounce" />
             <p className="font-sans text-sm">You need administrator privileges to manage quizzes.</p>
+            <button
+              onClick={() => setIsLoginModalOpen(true)}
+              className="rounded-xl bg-white px-4 py-2 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm cursor-pointer"
+            >
+              Unlock Admin Portal
+            </button>
+          </div>
+        );
+      case 'database':
+        return isAdmin ? (
+          <DatabaseConfig
+            token={token}
+            spreadsheetId={spreadsheetId}
+            setSpreadsheetId={setSpreadsheetId}
+            onLogin={handleGoogleSignIn}
+            isLoggingIn={isLoggingIn}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
+            <ShieldAlert className="h-10 w-10 text-rose-500 animate-bounce" />
+            <p className="font-sans text-sm">You need administrator privileges to configure Google Sheets integration.</p>
             <button
               onClick={() => setIsLoginModalOpen(true)}
               className="rounded-xl bg-white px-4 py-2 font-sans text-xs font-semibold text-black hover:bg-white/90 shadow-sm cursor-pointer"
@@ -104,13 +174,16 @@ export default function App() {
       
       {/* Top Banner and Navigation */}
       <div className="flex-1 flex flex-col">
-        <Navbar
-          isAdmin={isAdmin}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          onLoginClick={() => setIsLoginModalOpen(true)}
-          onLogoutClick={handleAdminLogout}
-        />
+        {!isDirectLink && (
+          <Navbar
+            isAdmin={isAdmin}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            onLoginClick={() => setIsLoginModalOpen(true)}
+            onLogoutClick={handleAdminLogout}
+            spreadsheetId={spreadsheetId}
+          />
+        )}
 
         {/* Beautiful Admin Password Login Modal */}
         {isLoginModalOpen && (
@@ -179,17 +252,19 @@ export default function App() {
       </div>
 
       {/* Styled minimalistic footer */}
-      <footer id="app-footer" className="border-t border-white/10 bg-[#0F0F0F] py-6 mt-8">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="font-sans text-xs text-white/40">
-            &copy; 2026 EduQuery Analytics. Offline-first grading engine.
-          </p>
-          <div className="flex items-center space-x-4 font-mono text-[10px] text-white/40">
-            <span>DATABASE: LOCAL STORAGE DB</span>
-            <span>SECURE CRYPTO VERIFIER</span>
+      {!isDirectLink && (
+        <footer id="app-footer" className="border-t border-white/10 bg-[#0F0F0F] py-6 mt-8">
+          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p className="font-sans text-xs text-white/40">
+              &copy; 2026 EduQuery Analytics. Offline-first grading engine.
+            </p>
+            <div className="flex items-center space-x-4 font-mono text-[10px] text-white/40">
+              <span>DATABASE: {spreadsheetId ? 'GOOGLE SHEETS DB' : 'LOCAL STORAGE DB'}</span>
+              <span>SECURE CRYPTO VERIFIER</span>
+            </div>
           </div>
-        </div>
-      </footer>
+        </footer>
+      )}
 
     </div>
   );

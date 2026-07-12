@@ -11,13 +11,17 @@ import {
   RefreshCw, 
   User as UserIcon,
   Medal,
-  AlertCircle
+  AlertCircle,
+  CheckCircle
 } from 'lucide-react';
 import { SheetScoreRow } from '../types';
 import { getLocalScores } from '../utils/localStorageDb';
+import { fetchScores } from '../sheets';
 
 interface LeaderboardProps {
   refreshTrigger: number;
+  token?: string | null;
+  spreadsheetId?: string | null;
 }
 
 // Highly polished educational preview leaderboard when offline
@@ -62,30 +66,60 @@ const LOCAL_LEADERBOARD_MOCKS: SheetScoreRow[] = [
 
 export default function Leaderboard({
   refreshTrigger,
+  token,
+  spreadsheetId,
 }: LeaderboardProps) {
   const [scores, setScores] = useState<SheetScoreRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDemoData, setShowDemoData] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const loadLeaderboardData = () => {
+  const loadLeaderboardData = async () => {
     setIsLoading(true);
-    // Offline mode - load local storage scores, optionally combine with mocks
-    const local = getLocalScores();
-    const combined = showDemoData ? [...local, ...LOCAL_LEADERBOARD_MOCKS] : local;
-    const sorted = [...combined].sort((a, b) => {
-      if (b.percentage !== a.percentage) {
-        return b.percentage - a.percentage;
+    setError(null);
+    try {
+      if (token && spreadsheetId) {
+        const sheetScores = await fetchScores(token, spreadsheetId);
+        const combined = showDemoData ? [...sheetScores, ...LOCAL_LEADERBOARD_MOCKS] : sheetScores;
+        const sorted = [...combined].sort((a, b) => {
+          if (b.percentage !== a.percentage) {
+            return b.percentage - a.percentage;
+          }
+          return a.timeTakenSeconds - b.timeTakenSeconds;
+        });
+        setScores(sorted);
+      } else {
+        const local = getLocalScores();
+        const combined = showDemoData ? [...local, ...LOCAL_LEADERBOARD_MOCKS] : local;
+        const sorted = [...combined].sort((a, b) => {
+          if (b.percentage !== a.percentage) {
+            return b.percentage - a.percentage;
+          }
+          return a.timeTakenSeconds - b.timeTakenSeconds;
+        });
+        setScores(sorted);
       }
-      return a.timeTakenSeconds - b.timeTakenSeconds;
-    });
-    setScores(sorted);
-    setIsLoading(false);
+    } catch (err: any) {
+      console.error(err);
+      setError('Failed to fetch scores from Google Sheets. Displaying local cache.');
+      const local = getLocalScores();
+      const combined = showDemoData ? [...local, ...LOCAL_LEADERBOARD_MOCKS] : local;
+      const sorted = [...combined].sort((a, b) => {
+        if (b.percentage !== a.percentage) {
+          return b.percentage - a.percentage;
+        }
+        return a.timeTakenSeconds - b.timeTakenSeconds;
+      });
+      setScores(sorted);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
     loadLeaderboardData();
-  }, [refreshTrigger, showDemoData]);
+  }, [refreshTrigger, showDemoData, token, spreadsheetId]);
 
   const filteredScores = scores.filter(item => 
     item.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -130,15 +164,21 @@ export default function Leaderboard({
         <div>
           <h2 className="font-serif italic text-3xl text-white">Active Leaderboard</h2>
           <p className="mt-1 font-sans text-sm text-white/40">
-            Real-time score records stored locally in your browser.
+            {spreadsheetId 
+              ? 'Real-time score records synchronized with your connected Google Sheet database.' 
+              : 'Real-time score records stored locally in your browser.'}
           </p>
         </div>
 
         {/* Sync / Reload Controls */}
         <div className="flex items-center space-x-2">
-          <div className="inline-flex items-center space-x-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-3.5 py-1 font-sans text-xs text-emerald-400">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-            <span>Offline Local Engine</span>
+          <div className={`inline-flex items-center space-x-1.5 rounded-full border px-3.5 py-1 font-sans text-xs ${
+            spreadsheetId 
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+              : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+          }`}>
+            <CheckCircle className="h-3.5 w-3.5 shrink-0" />
+            <span>{spreadsheetId ? 'Google Sheets DB Active' : 'Offline Local Engine'}</span>
           </div>
 
           <button
@@ -151,6 +191,13 @@ export default function Leaderboard({
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="flex items-start space-x-2 rounded-xl border border-rose-500/20 bg-rose-500/10 p-4 font-sans text-xs text-rose-400 mb-6">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* Filter and Stats bar */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
@@ -325,26 +372,5 @@ export default function Leaderboard({
       )}
 
     </div>
-  );
-}
-
-// Inline helper for CheckCircle to avoid broken imports
-function CheckCircle(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-      <path d="m9 11 3 3L22 4" />
-    </svg>
   );
 }

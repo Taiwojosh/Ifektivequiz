@@ -12,15 +12,17 @@ import {
   CheckCircle,
   FileJson,
   Lock,
-  User as UserIcon
+  User as UserIcon,
+  Database
 } from 'lucide-react';
 
 interface NavbarProps {
   isAdmin: boolean;
-  activeTab: 'quiz' | 'leaderboard' | 'analytics' | 'manage';
-  setActiveTab: (tab: 'quiz' | 'leaderboard' | 'analytics' | 'manage') => void;
+  activeTab: 'quiz' | 'leaderboard' | 'analytics' | 'manage' | 'database';
+  setActiveTab: (tab: 'quiz' | 'leaderboard' | 'analytics' | 'manage' | 'database') => void;
   onLoginClick: () => void;
   onLogoutClick: () => void;
+  spreadsheetId?: string | null;
 }
 
 export default function Navbar({
@@ -29,6 +31,7 @@ export default function Navbar({
   setActiveTab,
   onLoginClick,
   onLogoutClick,
+  spreadsheetId,
 }: NavbarProps) {
   return (
     <header id="app-header" className="sticky top-0 z-40 w-full border-b border-white/10 bg-[#0F0F0F]/80 backdrop-blur-md">
@@ -100,6 +103,19 @@ export default function Navbar({
                 <FileJson className="h-3.5 w-3.5" />
                 <span>Manage Quizzes</span>
               </button>
+
+              <button
+                id="tab-database"
+                onClick={() => setActiveTab('database')}
+                className={`flex items-center space-x-2 rounded-lg px-4 py-2 font-sans text-xs uppercase tracking-wider font-semibold transition-all border ${
+                  activeTab === 'database'
+                    ? 'bg-white/10 text-white border-white/20 shadow-[0_0_12px_rgba(255,255,255,0.05)]'
+                    : 'text-white/50 border-transparent hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <Database className="h-3.5 w-3.5" />
+                <span>Sheets DB</span>
+              </button>
             </>
           )}
         </nav>
@@ -108,9 +124,15 @@ export default function Navbar({
         <div className="flex items-center space-x-4">
           
           {/* Database Integration status */}
-          <div className="hidden lg:flex items-center space-x-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-white/60">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-500" />
-            <span className="text-emerald-500 font-semibold">ENGINE: OFFLINE LOCAL</span>
+          <div className={`hidden lg:flex items-center space-x-2 rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider ${
+            spreadsheetId 
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' 
+              : 'border-white/10 bg-white/5 text-white/60'
+          }`}>
+            <CheckCircle className={`h-3.5 w-3.5 ${spreadsheetId ? 'text-emerald-400' : 'text-amber-500'}`} />
+            <span className={`${spreadsheetId ? 'text-emerald-400' : 'text-white/60'} font-semibold`}>
+              ENGINE: {spreadsheetId ? 'GOOGLE SHEETS' : 'OFFLINE LOCAL'}
+            </span>
           </div>
 
           {isAdmin ? (
@@ -120,7 +142,7 @@ export default function Navbar({
                   Administrator
                 </span>
                 <span className="font-mono text-[9px] text-white/40">
-                  Local Mode
+                  {spreadsheetId ? 'Sheets Active' : 'Local Mode'}
                 </span>
               </div>
               
@@ -190,6 +212,15 @@ export default function Navbar({
             >
               <FileJson className="h-4.5 w-4.5" />
               <span>Manage</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('database')}
+              className={`flex flex-col items-center space-y-0.5 font-sans text-[10px] font-medium transition-all ${
+                activeTab === 'database' ? 'text-white font-bold' : 'text-white/40 hover:text-white/60'
+              }`}
+            >
+              <Database className="h-4.5 w-4.5" />
+              <span>Database</span>
             </button>
           </>
         )}

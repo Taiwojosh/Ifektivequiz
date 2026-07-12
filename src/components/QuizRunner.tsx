@@ -14,18 +14,24 @@ import {
   RefreshCw,
   Award,
   User as UserIcon,
-  ChevronLeft
+  ChevronLeft,
+  AlertCircle
 } from 'lucide-react';
 import { getAllQuizzes } from '../quizzes';
-import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow } from '../types';
-import { saveLocalScore, saveLocalResponses } from '../utils/localStorageDb';
+import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow, CandidateResponse, PendingSubmission } from '../types';
+import { saveLocalScore, saveLocalResponses, savePendingSubmission } from '../utils/localStorageDb';
+import { appendScoreRow, appendResponseRows } from '../sheets';
 
 interface QuizRunnerProps {
   onResultsSubmitted: () => void;
+  token?: string | null;
+  spreadsheetId?: string | null;
 }
 
 export default function QuizRunner({
   onResultsSubmitted,
+  token,
+  spreadsheetId,
 }: QuizRunnerProps) {
   const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
   const [isQuizRunning, setIsQuizRunning] = useState(false);
@@ -41,10 +47,27 @@ export default function QuizRunner({
   const [nameInput, setNameInput] = useState('');
   const [isChangingName, setIsChangingName] = useState(false);
   const [quizPendingStart, setQuizPendingStart] = useState<Quiz | null>(null);
+  const [directLinkQuizId, setDirectLinkQuizId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const qid = params.get('quizId');
+    if (qid) {
+      setDirectLinkQuizId(qid);
+      const quiz = getAllQuizzes().find(q => q.id === qid);
+      if (quiz) {
+        setNameInput(localStorage.getItem('eduquery_candidate_name') || '');
+        setQuizPendingStart(quiz);
+      }
+    }
+  }, []);
 
   // Results view states
   const [sessionResults, setSessionResults] = useState<QuizSession | null>(null);
+  const [justSubmittedPending, setJustSubmittedPending] = useState<PendingSubmission | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<boolean | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const secondsCounterRef = useRef<NodeJS.Timeout | null>(null);
@@ -92,6 +115,7 @@ export default function QuizRunner({
     setTimeLeft(quiz.durationMinutes * 60);
     setTimeTakenSeconds(0);
     setSessionResults(null);
+    setJustSubmittedPending(null);
     setSubmitSuccess(null);
     setIsQuizRunning(true);
   };
@@ -136,17 +160,11 @@ export default function QuizRunner({
   const handleCompleteQuiz = async () => {
     if (!selectedQuiz) return;
     setIsQuizRunning(false);
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    // Calculate details and scores
-    let totalCorrect = 0;
-    const responses: QuizResponse[] = selectedQuiz.questions.map((question) => {
+    const candidateResponses: CandidateResponse[] = selectedQuiz.questions.map((question) => {
       const uAnswer = (userAnswers[question.id] || '').trim();
-      const isCorrect = question.type === 'mcq'
-        ? uAnswer === question.correctAnswer
-        : uAnswer.toLowerCase() === question.correctAnswer.toLowerCase();
-
-      if (isCorrect) totalCorrect++;
-
       return {
         questionId: question.id,
         questionText: question.text,
@@ -154,58 +172,96 @@ export default function QuizRunner({
         category: question.category,
         userAnswer: uAnswer || '[Skipped]',
         correctAnswer: question.correctAnswer,
-        isCorrect,
-        timeSpentSeconds: Math.floor(timeTakenSeconds / selectedQuiz.questions.length), // approximate
+        isCorrect: question.type === 'mcq'
+          ? uAnswer === question.correctAnswer
+          : uAnswer.toLowerCase() === question.correctAnswer.toLowerCase()
       };
     });
 
     const emailPrefix = (candidateName || 'anonymous').toLowerCase().replace(/\s+/g, '');
-    const finalSession: QuizSession = {
-      quizId: selectedQuiz.id,
-      quizTitle: selectedQuiz.title,
-      userName: candidateName || 'Anonymous Candidate',
-      userEmail: `${emailPrefix}@eduquery.internal`,
-      responses,
-      score: totalCorrect,
-      totalQuestions: selectedQuiz.questions.length,
-      timeTakenSeconds,
-      timestamp: new Date().toISOString(),
-    };
+    const userEmail = `${emailPrefix}@eduquery.internal`;
+    const timestamp = new Date().toISOString();
 
-    setSessionResults(finalSession);
-    await uploadResultsToLocal(finalSession);
-  };
+    const needsManualGrading = selectedQuiz.questions.some(q => (q as any).type === 'essay');
 
-  const uploadResultsToLocal = async (session: QuizSession) => {
-    const percentage = Math.round((session.score / session.totalQuestions) * 100);
-    
-    const scoreRow: SheetScoreRow = {
-      timestamp: session.timestamp,
-      userName: session.userName,
-      userEmail: session.userEmail,
-      score: session.score,
-      totalQuestions: session.totalQuestions,
-      percentage,
-      timeTakenSeconds: session.timeTakenSeconds,
-    };
+    if (needsManualGrading) {
+      const pendingSubmission: PendingSubmission = {
+        id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        quizId: selectedQuiz.id,
+        quizTitle: selectedQuiz.title,
+        userName: candidateName || 'Anonymous Candidate',
+        userEmail,
+        responses: candidateResponses,
+        timeTakenSeconds,
+        timestamp,
+        status: 'pending'
+      };
 
-    const responseRows: SheetResponseRow[] = session.responses.map((resp, idx) => ({
-      timestamp: session.timestamp,
-      userEmail: session.userEmail,
-      questionIndex: idx + 1,
-      questionText: resp.questionText,
-      type: resp.questionType,
-      userAnswer: resp.userAnswer,
-      correctAnswer: resp.correctAnswer,
-      isCorrect: resp.isCorrect,
-      category: resp.category,
-    }));
+      savePendingSubmission(pendingSubmission);
+      setJustSubmittedPending(pendingSubmission);
+      setSubmitSuccess(true);
+      setIsSubmitting(false);
+      onResultsSubmitted();
+    } else {
+      try {
+        let correctCount = 0;
+        candidateResponses.forEach(r => {
+          if (r.isCorrect) correctCount++;
+        });
+        const totalQuestions = selectedQuiz.questions.length;
+        const percentage = Math.round((correctCount / totalQuestions) * 100);
 
-    // Save locally to local storage DB
-    saveLocalScore(scoreRow);
-    saveLocalResponses(responseRows);
-    setSubmitSuccess(true);
-    onResultsSubmitted(); // trigger reload on leaderboard/analytics in parent state
+        const scoreRow: SheetScoreRow = {
+          timestamp,
+          userName: candidateName || 'Anonymous Candidate',
+          userEmail,
+          score: correctCount,
+          totalQuestions,
+          percentage,
+          timeTakenSeconds
+        };
+
+        const responseRows: SheetResponseRow[] = candidateResponses.map((resp, idx) => ({
+          timestamp,
+          userEmail,
+          questionIndex: idx + 1,
+          questionText: resp.questionText,
+          type: resp.questionType,
+          userAnswer: resp.userAnswer,
+          correctAnswer: resp.correctAnswer,
+          isCorrect: resp.isCorrect,
+          category: resp.category
+        }));
+
+        if (token && spreadsheetId) {
+          try {
+            await appendScoreRow(token, spreadsheetId, scoreRow);
+            await appendResponseRows(token, spreadsheetId, responseRows);
+          } catch (err: any) {
+            console.error('Failed to sync to Google Sheets:', err);
+            setSubmitError(`Results saved locally, but failed to sync with Google Sheets: ${err?.message || err}.`);
+          }
+        }
+
+        saveLocalScore(scoreRow);
+        saveLocalResponses(responseRows);
+
+        setSessionResults({
+          quizId: selectedQuiz.id,
+          userName: candidateName || 'Anonymous Candidate',
+          score: correctCount,
+          totalQuestions,
+          timeTakenSeconds
+        });
+        setSubmitSuccess(true);
+      } catch (err: any) {
+        console.error(err);
+        setSubmitError(err?.message || 'An error occurred while saving the grade.');
+      } finally {
+        setIsSubmitting(false);
+        onResultsSubmitted();
+      }
+    }
   };
 
   // Human-readable time converter
@@ -216,6 +272,16 @@ export default function QuizRunner({
   };
 
   // Rendering logic
+  if (isSubmitting) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-6">
+        <div className="h-12 w-12 rounded-full border-4 border-white/10 border-t-white animate-spin"></div>
+        <p className="font-serif italic text-xl text-white">Grading & Publishing your results...</p>
+        <span className="font-mono text-xs uppercase tracking-wider text-white/40">Please wait</span>
+      </div>
+    );
+  }
+
   if (isQuizRunning && selectedQuiz) {
     const currentQuestion = selectedQuiz.questions[currentQuestionIndex];
     const isLastQuestion = currentQuestionIndex === selectedQuiz.questions.length - 1;
@@ -333,6 +399,80 @@ export default function QuizRunner({
     );
   }
 
+  // Score review results screen (if graded or used otherwise)
+  if (justSubmittedPending && selectedQuiz) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 animate-in fade-in duration-300">
+        
+        {/* Submitted Header */}
+        <div className="text-center space-y-4 mb-10">
+          <div className="inline-flex h-16 w-16 items-center justify-center rounded-3xl bg-amber-500/10 border border-amber-500/20 text-amber-400 mb-2">
+            <Clock className="h-8 w-8 animate-pulse text-amber-400" />
+          </div>
+          <div className="space-y-1">
+            <span className="font-mono text-[9px] uppercase tracking-[0.2em] font-bold text-amber-400">SUBMISSION RECEIVED</span>
+            <h2 className="font-serif italic text-3xl text-white">Pending Admin Grading</h2>
+            <p className="font-sans text-xs text-white/50">
+              Candidate: <span className="font-bold text-white">{justSubmittedPending.userName}</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Info card */}
+        <div className="rounded-2xl border border-amber-500/10 bg-amber-500/5 p-5 mb-8">
+          <p className="font-sans text-xs text-amber-300/90 leading-relaxed text-center">
+            Your quiz has been successfully submitted to the system queue. 
+            Because <strong>scores are determined by the administrator</strong>, your graded score and performance analysis will be posted to the Leaderboard once the administrator reviews and grades your short-answer and multiple-choice responses.
+          </p>
+        </div>
+
+        {/* Detailed Submitted Answers Review */}
+        <div className="space-y-6">
+          <h4 className="font-mono text-[10px] font-bold text-white/40 uppercase tracking-widest mb-2">Submitted Answers Review</h4>
+
+          {justSubmittedPending.responses.map((resp, idx) => {
+            return (
+              <div key={resp.questionId} className="rounded-2xl border border-white/5 bg-[#141414] p-5 space-y-4 shadow-sm">
+                
+                {/* Header status */}
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] font-bold text-white/40">QUESTION {idx + 1}</span>
+                  <span className="inline-flex items-center rounded bg-white/5 px-2 py-0.5 font-mono text-[9px] font-bold text-white/50 uppercase">
+                    {resp.questionType === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                  </span>
+                </div>
+
+                {/* Question */}
+                <p className="font-sans text-sm font-medium text-white leading-snug">{resp.questionText}</p>
+
+                {/* Answer Submitted */}
+                <div className="rounded-xl p-3.5 bg-white/5 border border-white/10 text-white/90 text-xs">
+                  <span className="font-mono text-[9px] uppercase font-bold text-white/40 block mb-1">Your Submitted Answer</span>
+                  <span className="font-sans font-semibold break-all">{resp.userAnswer}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Return Button */}
+        <div className="flex justify-center mt-10">
+          <button
+            onClick={() => {
+              setJustSubmittedPending(null);
+              setSelectedQuiz(null);
+            }}
+            className="flex items-center space-x-1.5 rounded-xl bg-white px-6 py-2.5 font-sans text-xs font-bold text-black hover:bg-white/90 transition-all shadow-sm cursor-pointer"
+          >
+            <RefreshCw className="h-4 w-4" />
+            <span>{directLinkQuizId ? 'Close Results' : 'Return to Quiz Hub'}</span>
+          </button>
+        </div>
+
+      </div>
+    );
+  }
+
   // Score review results screen
   if (sessionResults && selectedQuiz) {
     const scorePercent = Math.round((sessionResults.score / sessionResults.totalQuestions) * 100);
@@ -353,6 +493,13 @@ export default function QuizRunner({
             </p>
           </div>
         </div>
+
+        {submitError && (
+          <div className="flex items-start space-x-2 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 font-sans text-xs text-amber-400 mb-6">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>{submitError}</span>
+          </div>
+        )}
 
         {/* Dashboard Results Cards */}
         <div className="grid sm:grid-cols-3 gap-4 mb-8">
@@ -463,11 +610,14 @@ export default function QuizRunner({
         {/* Retry / Return Button */}
         <div className="flex justify-center mt-10">
           <button
-            onClick={() => setSelectedQuiz(null)}
+            onClick={() => {
+              setSessionResults(null);
+              setSelectedQuiz(null);
+            }}
             className="flex items-center space-x-1.5 rounded-xl border border-white/20 bg-transparent px-6 py-2.5 font-sans text-xs font-bold text-white hover:bg-white/5 cursor-pointer"
           >
             <RefreshCw className="h-4 w-4" />
-            <span>Select Another Quiz</span>
+            <span>{directLinkQuizId ? 'Close Results' : 'Select Another Quiz'}</span>
           </button>
         </div>
 
@@ -618,16 +768,27 @@ export default function QuizRunner({
       </div>
 
       {/* Quiz Dashboard Header */}
-      <div className="text-center mb-10">
-        <h2 className="font-serif italic text-3xl text-white">Ready for a challenge?</h2>
-        <p className="mt-2 font-sans text-sm text-white/40 max-w-md mx-auto">
-          Test your skills across Frontend Core and Web Engineering modules. Compete live on the interactive leaderboard.
-        </p>
-      </div>
+      {!directLinkQuizId ? (
+        <div className="text-center mb-10">
+          <h2 className="font-serif italic text-3xl text-white">Ready for a challenge?</h2>
+          <p className="mt-2 font-sans text-sm text-white/40 max-w-md mx-auto">
+            Test your skills across Frontend Core and Web Engineering modules. Compete live on the interactive leaderboard.
+          </p>
+        </div>
+      ) : (
+        <div className="text-center mb-10">
+          <h2 className="font-serif italic text-3xl text-white">You've been invited</h2>
+          <p className="mt-2 font-sans text-sm text-white/40 max-w-md mx-auto">
+            Please register your candidate identity and begin the session when ready.
+          </p>
+        </div>
+      )}
 
       {/* Quizzes Grid */}
       <div className="grid gap-6 sm:grid-cols-2">
-        {getAllQuizzes().map((quiz) => {
+        {getAllQuizzes()
+          .filter((quiz) => (directLinkQuizId ? quiz.id === directLinkQuizId : true))
+          .map((quiz) => {
           return (
             <div 
               key={quiz.id} 
