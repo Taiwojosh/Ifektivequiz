@@ -103,8 +103,9 @@ export default function QuizRunner({
     };
   }, [isQuizRunning]);
 
-  const handleStartQuiz = (quiz: Quiz) => {
-    if (!candidateName.trim()) {
+  const handleStartQuiz = (quiz: Quiz, nameOverride?: string) => {
+    const activeName = nameOverride !== undefined ? nameOverride : candidateName;
+    if (!activeName.trim()) {
       setQuizPendingStart(quiz);
       setNameInput('');
       return;
@@ -125,13 +126,14 @@ export default function QuizRunner({
     e.preventDefault();
     if (!nameInput.trim()) return;
 
-    localStorage.setItem('eduquery_candidate_name', nameInput.trim());
-    setCandidateName(nameInput.trim());
+    const trimmedName = nameInput.trim();
+    localStorage.setItem('eduquery_candidate_name', trimmedName);
+    setCandidateName(trimmedName);
 
     const targetQuiz = quizPendingStart;
     setQuizPendingStart(null);
     if (targetQuiz) {
-      handleStartQuiz(targetQuiz);
+      handleStartQuiz(targetQuiz, trimmedName);
     }
   };
 
