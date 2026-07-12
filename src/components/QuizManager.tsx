@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Quiz, PendingSubmission, SheetScoreRow, SheetResponseRow } from '../types';
-import { addCustomQuiz, getCustomQuizzes, deleteCustomQuiz, DEFAULT_QUIZZES } from '../quizzes';
+import { addCustomQuiz, getCustomQuizzes, deleteCustomQuiz, DEFAULT_QUIZZES, setCustomQuizzesInMemory } from '../quizzes';
 import { 
   FileJson, 
   PlusCircle, 
@@ -24,7 +24,7 @@ import {
   saveLocalScore, 
   saveLocalResponses 
 } from '../utils/localStorageDb';
-import { appendScoreRow, appendResponseRows, saveQuizToSheets } from '../sheets';
+import { appendScoreRow, appendResponseRows, saveQuizToSheets, deleteQuizFromSheets, fetchQuizzesFromSheets } from '../sheets';
 
 interface QuizManagerProps {
   token?: string | null;
@@ -44,6 +44,38 @@ export default function QuizManager({
   const [success, setSuccess] = useState<string | null>(null);
   const [customQuizzes, setCustomQuizzes] = useState<Quiz[]>(getCustomQuizzes());
   const [isDragging, setIsDragging] = useState(false);
+  const [isSyncingQuizzes, setIsSyncingQuizzes] = useState(false);
+
+  // Sync quizzes from Google Sheets if connected
+  useEffect(() => {
+    async function syncQuizzesFromSheets() {
+      if (token && spreadsheetId) {
+        setIsSyncingQuizzes(true);
+        try {
+          const sheetQuizzes = await fetchQuizzesFromSheets(token, spreadsheetId);
+          if (sheetQuizzes && sheetQuizzes.length > 0) {
+            const localCustom = getCustomQuizzes();
+            const updatedLocal = [...localCustom];
+            sheetQuizzes.forEach(sq => {
+              const existsIdx = updatedLocal.findIndex(q => q.id === sq.id);
+              if (existsIdx !== -1) {
+                updatedLocal[existsIdx] = sq;
+              } else {
+                updatedLocal.push(sq);
+              }
+            });
+            setCustomQuizzesInMemory(updatedLocal);
+            setCustomQuizzes(updatedLocal);
+          }
+        } catch (err) {
+          console.error("Failed to sync quizzes from sheets:", err);
+        } finally {
+          setIsSyncingQuizzes(false);
+        }
+      }
+    }
+    syncQuizzesFromSheets();
+  }, [token, spreadsheetId]);
 
   // Grading Portal States
   const [pendingSubmissions, setPendingSubmissions] = useState<PendingSubmission[]>([]);
@@ -172,10 +204,23 @@ export default function QuizManager({
     e.target.value = ''; 
   };
 
-  const handleDelete = (id: string) => {
-    deleteCustomQuiz(id);
-    setCustomQuizzes(getCustomQuizzes());
-    setSuccess("Quiz deleted successfully.");
+  const handleDelete = async (id: string) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      deleteCustomQuiz(id);
+      setCustomQuizzes(getCustomQuizzes());
+
+      if (token && spreadsheetId) {
+        await deleteQuizFromSheets(token, spreadsheetId, id);
+        setSuccess("Quiz deleted successfully from local cache and Google Sheets.");
+      } else {
+        setSuccess("Quiz deleted successfully.");
+      }
+    } catch (err: any) {
+      console.error("Failed to delete quiz from sheets:", err);
+      setError("Quiz deleted locally, but failed to remove from Google Sheets.");
+    }
   };
 
   // Grading Queue Helpers
@@ -750,7 +795,7 @@ export default function QuizManager({
                       <h4 className="text-white font-medium">{quiz.title}</h4>
                       <p className="text-white/50 text-xs mt-1">{quiz.questions.length} questions • {quiz.durationMinutes} mins</p>
                     </div>
-                    <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex space-x-1 opacity-100 transition-opacity">
                       <button 
                         onClick={async () => {
                           if (token && spreadsheetId) {
@@ -768,14 +813,18 @@ export default function QuizManager({
                           navigator.clipboard.writeText(url.toString());
                           alert('Synced with Google Sheets and copied direct link to clipboard!');
                         }}
-                        className="p-2 text-white/30 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer"
+                        className="p-2 text-white/50 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer"
                         title="Copy Direct Link"
                       >
                         <ExternalLink className="w-4 h-4" />
                       </button>
                       <button 
-                        onClick={() => handleDelete(quiz.id)}
-                        className="p-2 text-white/30 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors cursor-pointer"
+                        onClick={() => {
+                          if (confirm(`Are you sure you want to permanently delete the custom quiz "${quiz.title}"? This will delete it from local storage and sync this deletion to your Google Sheets.`)) {
+                            handleDelete(quiz.id);
+                          }
+                        }}
+                        className="p-2 text-white/50 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors cursor-pointer"
                         title="Delete Quiz"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -812,7 +861,7 @@ export default function QuizManager({
                         navigator.clipboard.writeText(url.toString());
                         alert('Copied direct link to clipboard!');
                       }}
-                      className="p-1.5 text-white/30 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+                      className="p-1.5 text-white/50 hover:text-indigo-400 hover:bg-indigo-400/10 rounded-lg transition-colors cursor-pointer opacity-100"
                       title="Copy Direct Link"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />

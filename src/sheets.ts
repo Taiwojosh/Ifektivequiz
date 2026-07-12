@@ -457,3 +457,50 @@ export async function savePlayerToSheets(
     throw new Error(err?.error?.message || 'Failed to register player in Google Sheets.');
   }
 }
+
+/**
+ * Deletes a quiz from the Quizzes sheet by filtering the rows and rewriting the list
+ */
+export async function deleteQuizFromSheets(token: string, spreadsheetId: string, quizId: string): Promise<void> {
+  await ensureSheetsExist(token, spreadsheetId);
+
+  // 1. Fetch current quizzes from Sheets
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A2:E`;
+  const getResponse = await fetch(getUrl, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  if (!getResponse.ok) {
+    return;
+  }
+
+  const data = await getResponse.json();
+  const rows = data.values || [];
+  
+  // 2. Filter out the quiz to be deleted
+  const remainingRows = rows.filter((row: any[]) => row && row[0] !== quizId);
+
+  // 3. Clear existing Quizzes sheet from row 2 downwards
+  const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A2:E:clear`;
+  await fetch(clearUrl, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify({}),
+  });
+
+  // 4. Write back remaining rows if any exist
+  if (remainingRows.length > 0) {
+    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Quizzes!A2:E?valueInputOption=USER_ENTERED`;
+    await fetch(updateUrl, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        range: 'Quizzes!A2:E',
+        majorDimension: 'ROWS',
+        values: remainingRows,
+      }),
+    });
+  }
+}
+

@@ -19,7 +19,7 @@ import {
   ExternalLink,
   Lock
 } from 'lucide-react';
-import { getAllQuizzes } from '../quizzes';
+import { getAllQuizzes, DEFAULT_QUIZZES } from '../quizzes';
 import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow, CandidateResponse, PendingSubmission } from '../types';
 import { saveLocalScore, saveLocalResponses, savePendingSubmission } from '../utils/localStorageDb';
 import { appendScoreRow, appendResponseRows, fetchQuizzesFromSheets, savePlayerToSheets } from '../sheets';
@@ -47,9 +47,7 @@ export default function QuizRunner({
   const [timeTakenSeconds, setTimeTakenSeconds] = useState(0);
   
   // Name configuration states
-  const [candidateName, setCandidateName] = useState<string>(() => {
-    return localStorage.getItem('eduquery_candidate_name') || '';
-  });
+  const [candidateName, setCandidateName] = useState<string>('');
   const [nameInput, setNameInput] = useState('');
   const [isChangingName, setIsChangingName] = useState(false);
   const [quizPendingStart, setQuizPendingStart] = useState<Quiz | null>(null);
@@ -73,19 +71,8 @@ export default function QuizRunner({
         setIsLoadingQuizzes(true);
         try {
           const sheetQuizzes = await fetchQuizzesFromSheets(token, spreadsheetId);
-          if (sheetQuizzes && sheetQuizzes.length > 0) {
-            setQuizzes(prev => {
-              const combined = [...prev];
-              sheetQuizzes.forEach(sq => {
-                const existsIdx = combined.findIndex(q => q.id === sq.id);
-                if (existsIdx !== -1) {
-                  combined[existsIdx] = sq;
-                } else {
-                  combined.push(sq);
-                }
-              });
-              return combined;
-            });
+          if (sheetQuizzes) {
+            setQuizzes([...DEFAULT_QUIZZES, ...sheetQuizzes]);
           }
         } catch (err) {
           console.error("Failed to fetch quizzes from Google Sheets:", err);
@@ -101,11 +88,34 @@ export default function QuizRunner({
     if (directLinkQuizId) {
       const quiz = quizzes.find(q => q.id === directLinkQuizId);
       if (quiz) {
-        setNameInput(localStorage.getItem('eduquery_candidate_name') || '');
+        setNameInput('');
         setQuizPendingStart(quiz);
       }
     }
   }, [directLinkQuizId, quizzes]);
+
+  // Handle connection lost / offline during a quiz session
+  useEffect(() => {
+    const handleConnectionLost = () => {
+      if (isQuizRunning) {
+        setIsQuizRunning(false);
+        setSelectedQuiz(null);
+        setUserAnswers({});
+        setCurrentQuestionIndex(0);
+        setTimeLeft(0);
+        setTimeTakenSeconds(0);
+        setCandidateName('');
+        setNameInput('');
+        setQuizPendingStart(null);
+        alert("Connection was lost! The quiz session has been aborted and restarted to preserve data integrity.");
+      }
+    };
+
+    window.addEventListener('offline', handleConnectionLost);
+    return () => {
+      window.removeEventListener('offline', handleConnectionLost);
+    };
+  }, [isQuizRunning]);
 
   // Results view states
   const [sessionResults, setSessionResults] = useState<QuizSession | null>(null);
@@ -171,7 +181,6 @@ export default function QuizRunner({
     if (!nameInput.trim()) return;
 
     const trimmedName = nameInput.trim();
-    localStorage.setItem('eduquery_candidate_name', trimmedName);
     setCandidateName(trimmedName);
 
     const targetQuiz = quizPendingStart;
@@ -296,7 +305,14 @@ export default function QuizRunner({
             await appendResponseRows(token, spreadsheetId, responseRows);
           } catch (err: any) {
             console.error('Failed to sync to Google Sheets:', err);
-            setSubmitError(`Results saved locally, but failed to sync with Google Sheets: ${err?.message || err}.`);
+            setSubmitError(`Connection failed! Failed to sync with Google Sheets: ${err?.message || err}. The quiz session has been aborted and restarted.`);
+            setIsQuizRunning(false);
+            setSelectedQuiz(null);
+            setUserAnswers({});
+            setCurrentQuestionIndex(0);
+            setTimeLeft(0);
+            setTimeTakenSeconds(0);
+            return;
           }
         }
 
@@ -828,7 +844,6 @@ export default function QuizRunner({
               onSubmit={(e) => {
                 e.preventDefault();
                 if (nameInput.trim()) {
-                  localStorage.setItem('eduquery_candidate_name', nameInput.trim());
                   setCandidateName(nameInput.trim());
                   setIsChangingName(false);
                 }

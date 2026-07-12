@@ -142,18 +142,14 @@ export const DEFAULT_QUIZZES: Quiz[] = [
   }
 ];
 
-const LOCAL_STORAGE_KEY = 'custom_quizzes';
+let memoryCustomQuizzes: Quiz[] = [];
 
 export function getCustomQuizzes(): Quiz[] {
-  try {
-    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (data) {
-      return JSON.parse(data) as Quiz[];
-    }
-  } catch (e) {
-    console.error('Failed to load custom quizzes from local storage', e);
-  }
-  return [];
+  return memoryCustomQuizzes;
+}
+
+export function setCustomQuizzesInMemory(quizzes: Quiz[]) {
+  memoryCustomQuizzes = quizzes;
 }
 
 export function getAllQuizzes(): Quiz[] {
@@ -161,13 +157,10 @@ export function getAllQuizzes(): Quiz[] {
 }
 
 export function addCustomQuiz(quiz: Quiz) {
-  const current = getCustomQuizzes();
-  current.push(quiz);
-  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(current));
+  memoryCustomQuizzes.push(quiz);
 }
 
 export function deleteCustomQuiz(quizId: string) {
-  const current = getCustomQuizzes();
-  const updated = current.filter(q => q.id !== quizId);
-  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
+  memoryCustomQuizzes = memoryCustomQuizzes.filter(q => q.id !== quizId);
 }
+
