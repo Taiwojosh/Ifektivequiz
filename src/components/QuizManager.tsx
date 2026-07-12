@@ -616,10 +616,106 @@ export default function QuizManager({
                 <button
                   onClick={handleImport}
                   disabled={!jsonInput.trim()}
-                  className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-black hover:bg-white/90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md cursor-pointer"
+                  className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-black hover:bg-white/90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md cursor-pointer text-xs"
                 >
                   Import Quiz
                 </button>
+              </div>
+            </div>
+
+            {/* Format Reference Card */}
+            <div className="rounded-2xl border border-white/10 bg-[#141414] p-6 shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <FileJson className="w-4 h-4 text-indigo-400" />
+                  <span className="text-xs uppercase font-bold tracking-wider text-white/80">JSON Example & Template</span>
+                </div>
+                <button
+                  onClick={() => {
+                    const sample = {
+                      id: "custom-engineering-quiz",
+                      title: "Web Engineering Custom Quiz",
+                      description: "A customized test checking client-side states, protocols, and essay responses.",
+                      durationMinutes: 15,
+                      questions: [
+                        {
+                          id: "custom-q1",
+                          text: "Which protocol is fully bi-directional and runs over a single TCP connection?",
+                          type: "mcq",
+                          options: [
+                            "HTTP/1.1",
+                            "WebSocket",
+                            "SMTP",
+                            "FTP"
+                          ],
+                          correctAnswer: "WebSocket",
+                          category: "Protocols",
+                          explanation: "WebSockets allow for full-duplex persistent connections between client and server."
+                        },
+                        {
+                          id: "custom-q2",
+                          text: "What operator is used in TypeScript to extract the keys of an interface?",
+                          type: "short",
+                          correctAnswer: "keyof",
+                          category: "TypeScript",
+                          explanation: "The keyof operator takes an object type and produces a string or numeric literal union of its keys."
+                        },
+                        {
+                          id: "custom-q3",
+                          text: "Describe the core difference between optimistic state updates and pessimistic state updates in user interfaces.",
+                          type: "essay",
+                          correctAnswer: "Optimistic updates predict success and update UI immediately; pessimistic updates wait for server confirmation first.",
+                          category: "UI Patterns",
+                          explanation: "Essay questions are bypassed by the auto-grading engine and flow directly to your manual Grading Queue subtab."
+                        }
+                      ]
+                    };
+                    navigator.clipboard.writeText(JSON.stringify(sample, null, 2));
+                    alert("Sample Quiz JSON copied to clipboard!");
+                  }}
+                  className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-indigo-400 hover:bg-indigo-400/10 hover:border-indigo-400/20 transition-all cursor-pointer"
+                >
+                  Copy Template
+                </button>
+              </div>
+
+              <p className="text-xs text-white/50 leading-relaxed font-sans">
+                Below is the standard JSON layout required by the system. Use <code className="text-indigo-400 font-mono">"type": "essay"</code> to route a question to your manual Grading Queue.
+              </p>
+
+              <div className="relative">
+                <pre className="max-h-48 overflow-y-auto rounded-xl bg-black/60 p-3 font-mono text-[10px] text-white/80 leading-relaxed border border-white/5 whitespace-pre-wrap scrollbar-thin scrollbar-thumb-white/10">
+{`{
+  "id": "custom-engineering-quiz",
+  "title": "Web Engineering Custom Quiz",
+  "description": "A customized test checking client-side states, protocols, and essay responses.",
+  "durationMinutes": 15,
+  "questions": [
+    {
+      "id": "custom-q1",
+      "text": "Which protocol runs over a single TCP connection?",
+      "type": "mcq",
+      "options": ["HTTP/1.1", "WebSocket", "SMTP"],
+      "correctAnswer": "WebSocket",
+      "category": "Protocols"
+    },
+    {
+      "id": "custom-q2",
+      "text": "TypeScript operator to extract keys of an interface?",
+      "type": "short",
+      "correctAnswer": "keyof",
+      "category": "TypeScript"
+    },
+    {
+      "id": "custom-q3",
+      "text": "Describe the core difference between optimistic and pessimistic updates.",
+      "type": "essay",
+      "correctAnswer": "Optimistic updates update UI instantly...",
+      "category": "UI Patterns"
+    }
+  ]
+}`}
+                </pre>
               </div>
             </div>
 

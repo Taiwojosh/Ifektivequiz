@@ -103,19 +103,6 @@ export default function Navbar({
                 <FileJson className="h-3.5 w-3.5" />
                 <span>Manage Quizzes</span>
               </button>
-
-              <button
-                id="tab-database"
-                onClick={() => setActiveTab('database')}
-                className={`flex items-center space-x-2 rounded-lg px-4 py-2 font-sans text-xs uppercase tracking-wider font-semibold transition-all border ${
-                  activeTab === 'database'
-                    ? 'bg-white/10 text-white border-white/20 shadow-[0_0_12px_rgba(255,255,255,0.05)]'
-                    : 'text-white/50 border-transparent hover:bg-white/5 hover:text-white'
-                }`}
-              >
-                <Database className="h-3.5 w-3.5" />
-                <span>Sheets DB</span>
-              </button>
             </>
           )}
         </nav>
@@ -212,15 +199,6 @@ export default function Navbar({
             >
               <FileJson className="h-4.5 w-4.5" />
               <span>Manage</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('database')}
-              className={`flex flex-col items-center space-y-0.5 font-sans text-[10px] font-medium transition-all ${
-                activeTab === 'database' ? 'text-white font-bold' : 'text-white/40 hover:text-white/60'
-              }`}
-            >
-              <Database className="h-4.5 w-4.5" />
-              <span>Database</span>
             </button>
           </>
         )}
