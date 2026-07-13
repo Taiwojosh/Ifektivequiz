@@ -16,7 +16,8 @@ import {
   Clock,
   User,
   ExternalLink,
-  Loader2
+  Loader2,
+  FolderOpen
 } from 'lucide-react';
 import { 
   getPendingSubmissions, 
@@ -29,11 +30,13 @@ import { appendScoreRow, appendResponseRows, saveQuizToSheets, deleteQuizFromShe
 interface QuizManagerProps {
   token?: string | null;
   spreadsheetId?: string | null;
+  appsScriptUrl?: string | null;
 }
 
 export default function QuizManager({
   token,
   spreadsheetId,
+  appsScriptUrl,
 }: QuizManagerProps) {
   // Navigation subtabs
   const [subTab, setSubTab] = useState<'grading' | 'quizzes'>('grading');
@@ -49,10 +52,10 @@ export default function QuizManager({
   // Sync quizzes from Google Sheets if connected
   useEffect(() => {
     async function syncQuizzesFromSheets() {
-      if (token && spreadsheetId) {
+      if ((token && spreadsheetId) || appsScriptUrl) {
         setIsSyncingQuizzes(true);
         try {
-          const sheetQuizzes = await fetchQuizzesFromSheets(token, spreadsheetId);
+          const sheetQuizzes = await fetchQuizzesFromSheets(token || null, spreadsheetId || null, appsScriptUrl);
           if (sheetQuizzes && sheetQuizzes.length > 0) {
             const localCustom = getCustomQuizzes();
             const updatedLocal = [...localCustom];
@@ -75,7 +78,7 @@ export default function QuizManager({
       }
     }
     syncQuizzesFromSheets();
-  }, [token, spreadsheetId]);
+  }, [token, spreadsheetId, appsScriptUrl]);
 
   // Grading Portal States
   const [pendingSubmissions, setPendingSubmissions] = useState<PendingSubmission[]>([]);
@@ -165,10 +168,10 @@ export default function QuizManager({
       quizzesToAdd.forEach(q => addCustomQuiz(q));
 
       // Save custom quizzes to Google Sheets as well if connected
-      if (token && spreadsheetId) {
+      if ((token && spreadsheetId) || appsScriptUrl) {
         for (const quiz of quizzesToAdd) {
           try {
-            await saveQuizToSheets(token, spreadsheetId, quiz);
+            await saveQuizToSheets(token || null, spreadsheetId || null, quiz, appsScriptUrl);
           } catch (sheetsErr: any) {
             console.error('Failed to sync quiz to Google Sheets:', sheetsErr);
           }
@@ -211,8 +214,8 @@ export default function QuizManager({
       deleteCustomQuiz(id);
       setCustomQuizzes(getCustomQuizzes());
 
-      if (token && spreadsheetId) {
-        await deleteQuizFromSheets(token, spreadsheetId, id);
+      if ((token && spreadsheetId) || appsScriptUrl) {
+        await deleteQuizFromSheets(token || null, spreadsheetId || null, id, appsScriptUrl);
         setSuccess("Quiz deleted successfully from local cache and Google Sheets.");
       } else {
         setSuccess("Quiz deleted successfully.");
@@ -282,10 +285,10 @@ export default function QuizManager({
       }));
 
       // Write to Google Sheets cloud first if connected
-      if (token && spreadsheetId) {
+      if ((token && spreadsheetId) || appsScriptUrl) {
         try {
-          await appendScoreRow(token, spreadsheetId, scoreRow);
-          await appendResponseRows(token, spreadsheetId, responseRows);
+          await appendScoreRow(token || null, spreadsheetId || null, scoreRow, appsScriptUrl);
+          await appendResponseRows(token || null, spreadsheetId || null, responseRows, appsScriptUrl);
         } catch (err: any) {
           console.error('Failed to sync to Google Sheets:', err);
           throw new Error(`Grade submission failed to sync with Google Sheets: ${err?.message || err}. Local save cancelled to preserve database integrity.`);
@@ -437,7 +440,7 @@ export default function QuizManager({
                           QUESTION {idx + 1} • <span className="uppercase">{resp.category}</span>
                         </span>
                         <span className="inline-flex items-center rounded-md bg-white/5 border border-white/10 px-2 py-0.5 font-mono text-[9px] font-semibold text-white/50 uppercase">
-                          {resp.questionType === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                          {resp.questionType.toUpperCase()}
                         </span>
                       </div>
 
@@ -449,14 +452,30 @@ export default function QuizManager({
                         <div className="rounded-xl p-3 bg-white/5 border border-white/10 text-white text-xs space-y-1">
                           <span className="font-mono text-[9px] uppercase font-bold text-white/30 block">Candidate's Answer</span>
                           <span className="font-sans font-semibold text-white/90 break-all">
-                            "{resp.userAnswer || '[Skipped]'}"
+                            {(() => {
+                              try {
+                                const parsed = JSON.parse(resp.userAnswer);
+                                if (Array.isArray(parsed)) return parsed.join(', ');
+                                return resp.userAnswer;
+                              } catch {
+                                return resp.userAnswer || '[Skipped]';
+                              }
+                            })()}
                           </span>
                         </div>
 
                         <div className="rounded-xl p-3 bg-emerald-500/5 border border-emerald-500/15 text-emerald-400 text-xs space-y-1">
                           <span className="font-mono text-[9px] uppercase font-bold text-white/30 block">Answer Key / Rubric</span>
                           <span className="font-sans font-semibold text-emerald-300 break-all">
-                            "{resp.correctAnswer}"
+                            {(() => {
+                              try {
+                                const parsed = JSON.parse(resp.correctAnswer);
+                                if (Array.isArray(parsed)) return parsed.join(', ');
+                                return resp.correctAnswer;
+                              } catch {
+                                return resp.correctAnswer;
+                              }
+                            })()}
                           </span>
                         </div>
                       </div>
@@ -466,11 +485,11 @@ export default function QuizManager({
                         <div className="flex items-center space-x-2">
                           <span className="font-sans text-xs text-white/40">Suggested grade:</span>
                           <span className={`font-mono text-[10px] font-bold uppercase rounded px-1.5 py-0.5 ${
-                            resp.userAnswer.toLowerCase() === resp.correctAnswer.toLowerCase()
+                            resp.isCorrect
                               ? 'bg-emerald-500/10 text-emerald-400'
                               : 'bg-rose-500/10 text-rose-400'
                           }`}>
-                            {resp.userAnswer.toLowerCase() === resp.correctAnswer.toLowerCase() ? 'Auto-Correct' : 'Auto-Incorrect'}
+                            {resp.isCorrect ? 'Auto-Correct' : 'Auto-Incorrect'}
                           </span>
                         </div>
 
@@ -690,40 +709,45 @@ export default function QuizManager({
                 <button
                   onClick={() => {
                     const sample = {
-                      id: "custom-engineering-quiz",
-                      title: "Web Engineering Custom Quiz",
-                      description: "A customized test checking client-side states, protocols, and essay responses.",
+                      id: "custom-form-demo",
+                      title: "General Feedback Form",
+                      description: "A customized form utilizing the new Google Forms style field types.",
                       durationMinutes: 15,
                       questions: [
                         {
-                          id: "custom-q1",
-                          text: "Which protocol is fully bi-directional and runs over a single TCP connection?",
-                          type: "mcq",
-                          options: [
-                            "HTTP/1.1",
-                            "WebSocket",
-                            "SMTP",
-                            "FTP"
-                          ],
-                          correctAnswer: "WebSocket",
-                          category: "Protocols",
-                          explanation: "WebSockets allow for full-duplex persistent connections between client and server."
+                          id: "q1",
+                          text: "What is your primary role?",
+                          type: "dropdown",
+                          options: ["Developer", "Designer", "Manager", "Other"],
+                          correctAnswer: "Developer",
+                          category: "Demographics"
                         },
                         {
-                          id: "custom-q2",
-                          text: "What operator is used in TypeScript to extract the keys of an interface?",
-                          type: "short",
-                          correctAnswer: "keyof",
-                          category: "TypeScript",
-                          explanation: "The keyof operator takes an object type and produces a string or numeric literal union of its keys."
+                          id: "q2",
+                          text: "Which frameworks do you use?",
+                          type: "checkbox",
+                          options: ["React", "Vue", "Angular", "Svelte"],
+                          correctAnswer: '["React"]',
+                          category: "Tech"
                         },
                         {
-                          id: "custom-q3",
-                          text: "Describe the core difference between optimistic state updates and pessimistic state updates in user interfaces.",
-                          type: "essay",
-                          correctAnswer: "Optimistic updates predict success and update UI immediately; pessimistic updates wait for server confirmation first.",
-                          category: "UI Patterns",
-                          explanation: "Essay questions are bypassed by the auto-grading engine and flow directly to your manual Grading Queue subtab."
+                          id: "q3",
+                          text: "How satisfied are you with our service?",
+                          type: "scale",
+                          scaleMin: 1,
+                          scaleMax: 5,
+                          scaleMinLabel: "Not Satisfied",
+                          scaleMaxLabel: "Very Satisfied",
+                          correctAnswer: "5",
+                          category: "Feedback"
+                        },
+                        {
+                          id: "q4",
+                          text: "Please provide any additional detailed feedback:",
+                          type: "paragraph",
+                          correctAnswer: "Feedback received.",
+                          category: "Feedback",
+                          explanation: "Paragraph questions are bypassed by the auto-grading engine and flow directly to your manual Grading Queue subtab."
                         }
                       ]
                     };
@@ -741,34 +765,46 @@ export default function QuizManager({
               </p>
 
               <div className="relative">
-                <pre className="max-h-48 overflow-y-auto rounded-xl bg-black/60 p-3 font-mono text-[10px] text-white/80 leading-relaxed border border-white/5 whitespace-pre-wrap scrollbar-thin scrollbar-thumb-white/10">
+                <pre className="max-h-64 overflow-y-auto rounded-xl bg-black/60 p-3 font-mono text-[10px] text-white/80 leading-relaxed border border-white/5 whitespace-pre-wrap scrollbar-thin scrollbar-thumb-white/10">
 {`{
-  "id": "custom-engineering-quiz",
-  "title": "Web Engineering Custom Quiz",
-  "description": "A customized test checking client-side states, protocols, and essay responses.",
+  "id": "custom-form-demo",
+  "title": "General Feedback Form",
+  "description": "A customized form utilizing the new Google Forms style field types.",
   "durationMinutes": 15,
   "questions": [
     {
-      "id": "custom-q1",
-      "text": "Which protocol runs over a single TCP connection?",
-      "type": "mcq",
-      "options": ["HTTP/1.1", "WebSocket", "SMTP"],
-      "correctAnswer": "WebSocket",
-      "category": "Protocols"
+      "id": "q1",
+      "text": "What is your primary role?",
+      "type": "dropdown",
+      "options": ["Developer", "Designer", "Manager", "Other"],
+      "correctAnswer": "Developer",
+      "category": "Demographics"
     },
     {
-      "id": "custom-q2",
-      "text": "TypeScript operator to extract keys of an interface?",
-      "type": "short",
-      "correctAnswer": "keyof",
-      "category": "TypeScript"
+      "id": "q2",
+      "text": "Which frameworks do you use?",
+      "type": "checkbox",
+      "options": ["React", "Vue", "Angular", "Svelte"],
+      "correctAnswer": "[\\"React\\"]",
+      "category": "Tech"
     },
     {
-      "id": "custom-q3",
-      "text": "Describe the core difference between optimistic and pessimistic updates.",
-      "type": "essay",
-      "correctAnswer": "Optimistic updates update UI instantly...",
-      "category": "UI Patterns"
+      "id": "q3",
+      "text": "How satisfied are you with our service?",
+      "type": "scale",
+      "scaleMin": 1,
+      "scaleMax": 5,
+      "scaleMinLabel": "Not Satisfied",
+      "scaleMaxLabel": "Very Satisfied",
+      "correctAnswer": "5",
+      "category": "Feedback"
+    },
+    {
+      "id": "q4",
+      "text": "Please provide any additional detailed feedback:",
+      "type": "paragraph",
+      "correctAnswer": "Feedback received.",
+      "category": "Feedback"
     }
   ]
 }`}
@@ -783,9 +819,16 @@ export default function QuizManager({
             {/* Custom Quizzes */}
             <h3 className="text-lg font-semibold text-white">Your Custom Quizzes</h3>
             {customQuizzes.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-white/20 p-8 text-center bg-white/5">
-                <p className="text-white/40 font-medium">No custom quizzes found.</p>
-                <p className="text-white/30 text-xs mt-1">Import one to get started.</p>
+              <div className="rounded-2xl border border-dashed border-white/10 bg-[#121212]/30 p-12 text-center space-y-4 max-w-md mx-auto my-6">
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/30">
+                  <FolderOpen className="h-6 w-6" />
+                </div>
+                <div className="space-y-1.5">
+                  <h4 className="font-sans text-sm font-bold text-white">No Custom Quizzes</h4>
+                  <p className="font-sans text-xs text-white/40 leading-relaxed">
+                    You haven't imported any custom quizzes yet. Import a valid Quiz JSON file to get started.
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="space-y-3">

@@ -17,17 +17,20 @@ import {
   ChevronLeft,
   AlertCircle,
   ExternalLink,
-  Lock
+  Lock,
+  FolderOpen
 } from 'lucide-react';
 import { getAllQuizzes, DEFAULT_QUIZZES } from '../quizzes';
 import { Quiz, QuizResponse, QuizSession, SheetScoreRow, SheetResponseRow, CandidateResponse, PendingSubmission } from '../types';
 import { saveLocalScore, saveLocalResponses, savePendingSubmission } from '../utils/localStorageDb';
 import { appendScoreRow, appendResponseRows, fetchQuizzesFromSheets, savePlayerToSheets } from '../sheets';
+import confetti from 'canvas-confetti';
 
 interface QuizRunnerProps {
   onResultsSubmitted: () => void;
   token?: string | null;
   spreadsheetId?: string | null;
+  appsScriptUrl?: string | null;
   onGoogleSignIn?: () => void;
   isLoggingIn?: boolean;
 }
@@ -36,6 +39,7 @@ export default function QuizRunner({
   onResultsSubmitted,
   token,
   spreadsheetId,
+  appsScriptUrl,
   onGoogleSignIn,
   isLoggingIn,
 }: QuizRunnerProps) {
@@ -67,10 +71,10 @@ export default function QuizRunner({
 
   useEffect(() => {
     async function loadQuizzes() {
-      if (token && spreadsheetId) {
+      if ((token && spreadsheetId) || appsScriptUrl) {
         setIsLoadingQuizzes(true);
         try {
-          const sheetQuizzes = await fetchQuizzesFromSheets(token, spreadsheetId);
+          const sheetQuizzes = await fetchQuizzesFromSheets(token || null, spreadsheetId || null, appsScriptUrl);
           if (sheetQuizzes) {
             setQuizzes([...DEFAULT_QUIZZES, ...sheetQuizzes]);
           }
@@ -82,7 +86,7 @@ export default function QuizRunner({
       }
     }
     loadQuizzes();
-  }, [token, spreadsheetId]);
+  }, [token, spreadsheetId, appsScriptUrl]);
 
   useEffect(() => {
     if (directLinkQuizId) {
@@ -123,6 +127,34 @@ export default function QuizRunner({
   const [submitSuccess, setSubmitSuccess] = useState<boolean | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (submitSuccess) {
+      const end = Date.now() + 3 * 1000;
+      const colors = ['#a786ff', '#fd8bbc', '#eca184', '#f8deb1'];
+
+      (function frame() {
+        confetti({
+          particleCount: 5,
+          angle: 60,
+          spread: 55,
+          origin: { x: 0 },
+          colors: colors
+        });
+        confetti({
+          particleCount: 5,
+          angle: 120,
+          spread: 55,
+          origin: { x: 1 },
+          colors: colors
+        });
+
+        if (Date.now() < end) {
+          requestAnimationFrame(frame);
+        }
+      }());
+    }
+  }, [submitSuccess]);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const secondsCounterRef = useRef<NodeJS.Timeout | null>(null);
@@ -185,10 +217,10 @@ export default function QuizRunner({
 
     const targetQuiz = quizPendingStart;
     if (targetQuiz) {
-      if (token && spreadsheetId) {
+      if ((token && spreadsheetId) || appsScriptUrl) {
         setIsRegisteringPlayer(true);
         try {
-          await savePlayerToSheets(token, spreadsheetId, trimmedName, targetQuiz.id, targetQuiz.title);
+          await savePlayerToSheets(token || null, spreadsheetId || null, trimmedName, targetQuiz.id, targetQuiz.title, appsScriptUrl);
         } catch (err) {
           console.error("Failed to register player in sheets:", err);
         } finally {
@@ -210,7 +242,7 @@ export default function QuizRunner({
 
   const handleNext = () => {
     if (!selectedQuiz) return;
-    if (currentQuestionIndex < selectedQuiz.questions.length - 1) {
+    if (currentQuestionIndex < (selectedQuiz.questions || []).length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
     } else {
       handleCompleteQuiz();
@@ -229,8 +261,24 @@ export default function QuizRunner({
     setIsSubmitting(true);
     setSubmitError(null);
 
-    const candidateResponses: CandidateResponse[] = selectedQuiz.questions.map((question) => {
+    const candidateResponses: CandidateResponse[] = (selectedQuiz.questions || []).map((question) => {
       const uAnswer = (userAnswers[question.id] || '').trim();
+      let isCorrect = false;
+      
+      if (question.type === 'mcq' || question.type === 'dropdown' || question.type === 'scale') {
+        isCorrect = uAnswer === question.correctAnswer;
+      } else if (question.type === 'checkbox') {
+        try {
+          const userArr = JSON.parse(uAnswer || '[]').sort();
+          const correctArr = JSON.parse(question.correctAnswer || '[]').sort();
+          isCorrect = JSON.stringify(userArr) === JSON.stringify(correctArr);
+        } catch {
+          isCorrect = uAnswer === question.correctAnswer;
+        }
+      } else {
+        isCorrect = uAnswer.toLowerCase() === question.correctAnswer.toLowerCase();
+      }
+
       return {
         questionId: question.id,
         questionText: question.text,
@@ -238,9 +286,7 @@ export default function QuizRunner({
         category: question.category,
         userAnswer: uAnswer || '[Skipped]',
         correctAnswer: question.correctAnswer,
-        isCorrect: question.type === 'mcq'
-          ? uAnswer === question.correctAnswer
-          : uAnswer.toLowerCase() === question.correctAnswer.toLowerCase()
+        isCorrect
       };
     });
 
@@ -248,7 +294,7 @@ export default function QuizRunner({
     const userEmail = `${emailPrefix}@eduquery.internal`;
     const timestamp = new Date().toISOString();
 
-    const needsManualGrading = selectedQuiz.questions.some(q => (q as any).type === 'essay');
+    const needsManualGrading = (selectedQuiz.questions || []).some(q => q.type === 'essay' || q.type === 'paragraph');
 
     if (needsManualGrading) {
       const pendingSubmission: PendingSubmission = {
@@ -274,7 +320,7 @@ export default function QuizRunner({
         candidateResponses.forEach(r => {
           if (r.isCorrect) correctCount++;
         });
-        const totalQuestions = selectedQuiz.questions.length;
+        const totalQuestions = (selectedQuiz.questions || []).length;
         const percentage = Math.round((correctCount / totalQuestions) * 100);
 
         const scoreRow: SheetScoreRow = {
@@ -299,10 +345,10 @@ export default function QuizRunner({
           category: resp.category
         }));
 
-        if (token && spreadsheetId) {
+        if ((token && spreadsheetId) || appsScriptUrl) {
           try {
-            await appendScoreRow(token, spreadsheetId, scoreRow);
-            await appendResponseRows(token, spreadsheetId, responseRows);
+            await appendScoreRow(token || null, spreadsheetId || null, scoreRow, appsScriptUrl);
+            await appendResponseRows(token || null, spreadsheetId || null, responseRows, appsScriptUrl);
           } catch (err: any) {
             console.error('Failed to sync to Google Sheets:', err);
             setSubmitError(`Connection failed! Failed to sync with Google Sheets: ${err?.message || err}. The quiz session has been aborted and restarted.`);
@@ -356,9 +402,18 @@ export default function QuizRunner({
   }
 
   if (isQuizRunning && selectedQuiz) {
-    const currentQuestion = selectedQuiz.questions[currentQuestionIndex];
-    const isLastQuestion = currentQuestionIndex === selectedQuiz.questions.length - 1;
-    const progressPercent = Math.round(((currentQuestionIndex + 1) / selectedQuiz.questions.length) * 100);
+    const questions = selectedQuiz.questions || [];
+    const currentQuestion = questions[currentQuestionIndex];
+    if (!currentQuestion) {
+      return (
+        <div className="mx-auto max-w-xl px-4 py-8 text-center text-white">
+          <p>Invalid quiz configuration: No questions found.</p>
+          <button onClick={() => setIsQuizRunning(false)} className="mt-4 rounded bg-white/10 px-4 py-2 hover:bg-white/20">Go Back</button>
+        </div>
+      );
+    }
+    const isLastQuestion = currentQuestionIndex === questions.length - 1;
+    const progressPercent = Math.round(((currentQuestionIndex + 1) / questions.length) * 100);
 
     return (
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
@@ -378,7 +433,7 @@ export default function QuizRunner({
         {/* Progress Bar */}
         <div className="mb-8">
           <div className="flex items-center justify-between font-mono text-xs text-white/40 mb-1.5">
-            <span>Question {currentQuestionIndex + 1} of {selectedQuiz.questions.length}</span>
+            <span>Question {currentQuestionIndex + 1} of {(selectedQuiz.questions || []).length}</span>
             <span>{progressPercent}% Complete</span>
           </div>
           <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
@@ -401,7 +456,7 @@ export default function QuizRunner({
                 <span>{currentQuestion.category.toUpperCase()}</span>
               </span>
               <span className="font-mono text-[10px] text-white/40">
-                {currentQuestion.type === 'mcq' ? 'MULTIPLE CHOICE' : 'SHORT ANSWER'}
+                {currentQuestion.type.toUpperCase()}
               </span>
             </div>
 
@@ -433,6 +488,85 @@ export default function QuizRunner({
                     </button>
                   );
                 })}
+              </div>
+            ) : currentQuestion.type === 'checkbox' ? (
+              <div className="space-y-3 pt-2">
+                {currentQuestion.options?.map((option, idx) => {
+                  const currentAnswers = JSON.parse(userAnswers[currentQuestion.id] || '[]');
+                  const isSelected = currentAnswers.includes(option);
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        let newAnswers = [...currentAnswers];
+                        if (isSelected) {
+                          newAnswers = newAnswers.filter((a: string) => a !== option);
+                        } else {
+                          newAnswers.push(option);
+                        }
+                        setUserAnswers(prev => ({ ...prev, [currentQuestion.id]: JSON.stringify(newAnswers) }));
+                      }}
+                      className={`w-full flex items-center justify-between rounded-xl border p-4 font-sans text-sm font-semibold transition-all cursor-pointer text-left ${
+                        isSelected 
+                          ? 'border-white bg-white text-black' 
+                          : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                      }`}
+                    >
+                      <span>{option}</span>
+                      <div className={`h-4.5 w-4.5 rounded-[4px] border flex items-center justify-center ${
+                        isSelected ? 'border-black bg-black' : 'border-white/30'
+                      }`}>
+                        {isSelected && <Check className="h-3 w-3 text-white" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : currentQuestion.type === 'dropdown' ? (
+              <div className="pt-2">
+                <select
+                  value={userAnswers[currentQuestion.id] || ''}
+                  onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-[#1A1A1A] px-4 py-3 font-sans text-sm text-white focus:border-white/30 focus:outline-none"
+                >
+                  <option value="" disabled>Select an option...</option>
+                  {currentQuestion.options?.map((option, idx) => (
+                    <option key={idx} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            ) : currentQuestion.type === 'paragraph' || currentQuestion.type === 'essay' ? (
+              <div className="pt-2">
+                <textarea
+                  placeholder="Type your detailed answer here..."
+                  value={userAnswers[currentQuestion.id] || ''}
+                  onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
+                  className="w-full h-32 rounded-xl border border-white/10 bg-white/5 px-4 py-3 font-sans text-sm text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
+                />
+              </div>
+            ) : currentQuestion.type === 'scale' ? (
+              <div className="pt-2 space-y-4">
+                <div className="flex items-center justify-between w-full max-w-md mx-auto">
+                  <span className="text-xs font-semibold text-white/50">{currentQuestion.scaleMinLabel}</span>
+                  <div className="flex gap-2 sm:gap-4">
+                    {Array.from({ length: (currentQuestion.scaleMax || 5) - (currentQuestion.scaleMin || 1) + 1 }).map((_, idx) => {
+                      const val = (currentQuestion.scaleMin || 1) + idx;
+                      const isSelected = userAnswers[currentQuestion.id] === String(val);
+                      return (
+                        <button
+                          key={val}
+                          onClick={() => handleShortAnswerChange(currentQuestion.id, String(val))}
+                          className={`flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-full border text-sm font-semibold transition-all ${
+                            isSelected ? 'bg-white border-white text-black' : 'bg-[#1A1A1A] border-white/10 text-white/70 hover:border-white/30'
+                          }`}
+                        >
+                          {val}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="text-xs font-semibold text-white/50">{currentQuestion.scaleMaxLabel}</span>
+                </div>
               </div>
             ) : (
               <div className="pt-2">
@@ -511,7 +645,7 @@ export default function QuizRunner({
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[10px] font-bold text-white/40">QUESTION {idx + 1}</span>
                   <span className="inline-flex items-center rounded bg-white/5 px-2 py-0.5 font-mono text-[9px] font-bold text-white/50 uppercase">
-                    {resp.questionType === 'mcq' ? 'Multiple Choice' : 'Short Answer'}
+                    {resp.questionType.toUpperCase()}
                   </span>
                 </div>
 
@@ -521,7 +655,17 @@ export default function QuizRunner({
                 {/* Answer Submitted */}
                 <div className="rounded-xl p-3.5 bg-white/5 border border-white/10 text-white/90 text-xs">
                   <span className="font-mono text-[9px] uppercase font-bold text-white/40 block mb-1">Your Submitted Answer</span>
-                  <span className="font-sans font-semibold break-all">{resp.userAnswer}</span>
+                  <span className="font-sans font-semibold break-all">
+                    {(() => {
+                      try {
+                        const parsed = JSON.parse(resp.userAnswer);
+                        if (Array.isArray(parsed)) return parsed.join(', ');
+                        return resp.userAnswer;
+                      } catch {
+                        return resp.userAnswer;
+                      }
+                    })()}
+                  </span>
                 </div>
               </div>
             );
@@ -625,7 +769,7 @@ export default function QuizRunner({
         <div className="space-y-6">
           <h4 className="font-mono text-[10px] font-bold text-white/40 uppercase tracking-widest mb-2">Detailed Questions Review</h4>
 
-          {selectedQuiz.questions.map((q, idx) => {
+          {(selectedQuiz.questions || []).map((q, idx) => {
             const resp = sessionResults.responses[idx];
             return (
               <div key={q.id} className="rounded-2xl border border-white/5 bg-[#141414] p-5 space-y-4 shadow-sm">
@@ -659,12 +803,32 @@ export default function QuizRunner({
                     resp.isCorrect ? 'bg-emerald-500/5 border-emerald-500/15 text-emerald-400' : 'bg-rose-500/5 border-rose-500/15 text-rose-400'
                   }`}>
                     <span className="font-mono text-[9px] uppercase font-bold text-white/40 block mb-1">Your Answer</span>
-                    <span className="font-sans font-semibold break-all">{resp.userAnswer}</span>
+                    <span className="font-sans font-semibold break-all">
+                      {(() => {
+                        try {
+                          const parsed = JSON.parse(resp.userAnswer);
+                          if (Array.isArray(parsed)) return parsed.join(', ');
+                          return resp.userAnswer;
+                        } catch {
+                          return resp.userAnswer;
+                        }
+                      })()}
+                    </span>
                   </div>
 
                   <div className="rounded-xl p-3 bg-white/5 border border-white/10 text-white">
                     <span className="font-mono text-[9px] uppercase font-bold text-white/40 block mb-1">Correct Answer</span>
-                    <span className="font-sans font-semibold break-all">{resp.correctAnswer}</span>
+                    <span className="font-sans font-semibold break-all">
+                      {(() => {
+                        try {
+                          const parsed = JSON.parse(resp.correctAnswer);
+                          if (Array.isArray(parsed)) return parsed.join(', ');
+                          return resp.correctAnswer;
+                        } catch {
+                          return resp.correctAnswer;
+                        }
+                      })()}
+                    </span>
                   </div>
                 </div>
 
@@ -700,7 +864,7 @@ export default function QuizRunner({
 
   // If we are a guest opening a direct link but we have no Google login,
   // prompt them to sign in first so they can access the sheets-based quiz & register.
-  if (directLinkQuizId && spreadsheetId && !token) {
+  if (directLinkQuizId && spreadsheetId && !token && !appsScriptUrl) {
     return (
       <div className="mx-auto max-w-md px-4 py-16">
         <div className="rounded-3xl border border-white/10 bg-[#141414] p-6 sm:p-8 shadow-2xl relative overflow-hidden text-center space-y-6">
@@ -911,9 +1075,16 @@ export default function QuizRunner({
             <p className="font-serif italic text-xs">Synchronizing quiz database from Google Sheets...</p>
           </div>
         ) : quizzes.length === 0 ? (
-          <div className="col-span-2 rounded-2xl border border-dashed border-white/10 bg-[#121212]/30 p-12 text-center text-white/40 space-y-2">
-            <p className="font-sans text-sm font-semibold">No Quizzes Available</p>
-            <p className="font-sans text-xs">There are no quizzes ready to attempt. Add some in the Admin panel.</p>
+          <div className="col-span-2 rounded-2xl border border-dashed border-white/10 bg-[#121212]/30 p-16 text-center space-y-6 max-w-lg mx-auto my-12">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/40">
+              <FolderOpen className="h-6 w-6" />
+            </div>
+            <div className="space-y-2">
+              <h4 className="font-sans text-sm font-bold text-white">No Quizzes Available</h4>
+              <p className="font-sans text-xs text-white/50 leading-relaxed">
+                There are currently no quizzes ready to attempt. Add a new quiz in the Admin panel to get started.
+              </p>
+            </div>
           </div>
         ) : (
           quizzes

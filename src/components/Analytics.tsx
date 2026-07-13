@@ -34,6 +34,7 @@ interface AnalyticsProps {
   refreshTrigger: number;
   token?: string | null;
   spreadsheetId?: string | null;
+  appsScriptUrl?: string | null;
 }
 
 interface QuestionMetrics {
@@ -81,10 +82,10 @@ export default function Analytics({
   refreshTrigger,
   token,
   spreadsheetId,
+  appsScriptUrl,
 }: AnalyticsProps) {
   const [rawData, setRawData] = useState<SheetResponseRow[]>([]);
   const [metrics, setMetrics] = useState<QuestionMetrics[]>([]);
-  const [showDemoData, setShowDemoData] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,24 +93,21 @@ export default function Analytics({
     setIsLoading(true);
     setError(null);
     try {
-      if (token && spreadsheetId) {
-        const sheetResponses = await fetchResponses(token, spreadsheetId);
-        const combined = showDemoData ? [...sheetResponses, ...LOCAL_RESPONSE_MOCKS] : sheetResponses;
-        setRawData(combined);
-        processMetrics(combined);
+      if ((token && spreadsheetId) || appsScriptUrl) {
+        const sheetResponses = await fetchResponses(token || null, spreadsheetId || null, appsScriptUrl);
+        setRawData(sheetResponses);
+        processMetrics(sheetResponses);
       } else {
         const local = getLocalResponses();
-        const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
-        setRawData(combined);
-        processMetrics(combined);
+        setRawData(local);
+        processMetrics(local);
       }
     } catch (err: any) {
       console.error(err);
       setError('Failed to fetch detailed responses from Google Sheets. Displaying local cache.');
       const local = getLocalResponses();
-      const combined = showDemoData ? [...local, ...LOCAL_RESPONSE_MOCKS] : local;
-      setRawData(combined);
-      processMetrics(combined);
+      setRawData(local);
+      processMetrics(local);
     } finally {
       setIsLoading(false);
     }
@@ -117,7 +115,7 @@ export default function Analytics({
 
   useEffect(() => {
     loadAnalyticsData();
-  }, [refreshTrigger, showDemoData, token, spreadsheetId]);
+  }, [refreshTrigger, token, spreadsheetId, appsScriptUrl]);
 
   const processMetrics = (data: SheetResponseRow[]) => {
     // Group by unique question text
@@ -298,14 +296,6 @@ export default function Analytics({
           </div>
 
           <button
-            onClick={() => setShowDemoData(prev => !prev)}
-            className="flex items-center space-x-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 font-sans text-xs font-semibold text-white/80 hover:bg-white/10 transition-all cursor-pointer"
-          >
-            <span>{showDemoData ? "Showing Demo Data" : "Show Demo Data"}</span>
-            <div className={`h-2 w-2 rounded-full ${showDemoData ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`} />
-          </button>
-
-          <button
             onClick={handleExportPDF}
             disabled={metrics.length === 0}
             className="flex items-center space-x-1.5 rounded-xl border border-white/15 bg-white/5 px-4 py-2 font-sans text-xs uppercase tracking-wider font-semibold text-white hover:bg-white/10 disabled:opacity-50 cursor-pointer shadow-sm transition-all"
@@ -324,22 +314,16 @@ export default function Analytics({
       )}
 
       {rawData.length === 0 ? (
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-6 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+        <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-4 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
           <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/40">
             <TrendingUp className="h-6 w-6" />
           </div>
           <div className="space-y-2">
             <h4 className="font-sans text-sm font-bold text-white">No Analytics Data Yet</h4>
             <p className="font-sans text-xs text-white/50 leading-relaxed">
-              This browser has not recorded any local quiz responses yet. Complete a quiz first to generate struggle analysis, or enable Demo Data to preview the analytics interface.
+              No quiz responses have been recorded yet. Complete a quiz as a candidate first to generate detailed struggle analytics and distractor reviews!
             </p>
           </div>
-          <button
-            onClick={() => setShowDemoData(true)}
-            className="inline-flex items-center space-x-1.5 rounded-xl border border-amber-500/20 bg-amber-500/10 hover:bg-amber-500/20 px-4 py-2 font-sans text-xs font-semibold text-amber-400 transition-all cursor-pointer"
-          >
-            <span>Enable Demo Data</span>
-          </button>
         </div>
       ) : (
         <>

@@ -10,8 +10,9 @@ import Leaderboard from './components/Leaderboard';
 import Analytics from './components/Analytics';
 import QuizManager from './components/QuizManager';
 import DatabaseConfig from './components/DatabaseConfig';
-import { AlertCircle, HelpCircle, Lock, ShieldAlert, X } from 'lucide-react';
+import { AlertCircle, HelpCircle, Lock, ShieldAlert, X, CheckCircle, Info, Loader2 } from 'lucide-react';
 import { initAuth, googleSignIn } from './firebase';
+import { subscribeToLoading, subscribeToToast, ToastMessage, ToastType } from './sheets';
 
 export default function App() {
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
@@ -20,6 +21,40 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'quiz' | 'leaderboard' | 'analytics' | 'manage' | 'database'>('quiz');
   
   const [isDirectLink, setIsDirectLink] = useState(false);
+
+  // Google Sheets token and database configuration state
+  const [token, setToken] = useState<string | null>(null);
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
+    return localStorage.getItem('eduquery_spreadsheet_id');
+  });
+  const [appsScriptUrl, setAppsScriptUrl] = useState<string | null>(() => {
+    return localStorage.getItem('eduquery_apps_script_url');
+  });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Centralized Sheets API tracking states
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  useEffect(() => {
+    const unsubscribeLoading = subscribeToLoading((isLoading) => {
+      setGlobalLoading(isLoading);
+    });
+
+    const unsubscribeToast = subscribeToToast((message, type) => {
+      const id = Math.random().toString(36).substring(2, 9);
+      setToasts((prev) => [...prev, { id, message, type }]);
+
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 4500);
+    });
+
+    return () => {
+      unsubscribeLoading();
+      unsubscribeToast();
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -31,14 +66,12 @@ export default function App() {
       localStorage.setItem('eduquery_spreadsheet_id', urlSpreadsheetId);
       setSpreadsheetId(urlSpreadsheetId);
     }
+    const urlAppsScriptUrl = params.get('appsScriptUrl');
+    if (urlAppsScriptUrl) {
+      localStorage.setItem('eduquery_apps_script_url', urlAppsScriptUrl);
+      setAppsScriptUrl(urlAppsScriptUrl);
+    }
   }, []);
-
-  // Google Sheets token and database configuration state
-  const [token, setToken] = useState<string | null>(null);
-  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
-    return localStorage.getItem('eduquery_spreadsheet_id');
-  });
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -103,6 +136,7 @@ export default function App() {
             onResultsSubmitted={handleResultsSubmitted}
             token={token}
             spreadsheetId={spreadsheetId}
+            appsScriptUrl={appsScriptUrl}
             onGoogleSignIn={handleGoogleSignIn}
             isLoggingIn={isLoggingIn}
           />
@@ -113,6 +147,7 @@ export default function App() {
             refreshTrigger={refreshTrigger}
             token={token}
             spreadsheetId={spreadsheetId}
+            appsScriptUrl={appsScriptUrl}
           />
         );
       case 'analytics':
@@ -121,6 +156,7 @@ export default function App() {
             refreshTrigger={refreshTrigger}
             token={token}
             spreadsheetId={spreadsheetId}
+            appsScriptUrl={appsScriptUrl}
           />
         ) : (
           <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
@@ -139,6 +175,7 @@ export default function App() {
           <QuizManager
             token={token}
             spreadsheetId={spreadsheetId}
+            appsScriptUrl={appsScriptUrl}
           />
         ) : (
           <div className="flex flex-col items-center justify-center min-h-[50vh] text-white/50 space-y-4">
@@ -158,6 +195,8 @@ export default function App() {
             token={token}
             spreadsheetId={spreadsheetId}
             setSpreadsheetId={setSpreadsheetId}
+            appsScriptUrl={appsScriptUrl}
+            setAppsScriptUrl={setAppsScriptUrl}
             onLogin={handleGoogleSignIn}
             isLoggingIn={isLoggingIn}
           />
@@ -181,6 +220,52 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-[#E0E0E0] flex flex-col justify-between font-sans">
       
+      {/* Top Progress Loading Line */}
+      {globalLoading && (
+        <div className="fixed top-0 left-0 right-0 z-[120] h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 animate-pulse" />
+      )}
+
+      {/* Centralized syncing badge */}
+      {globalLoading && (
+        <div className="fixed bottom-6 right-6 z-[100] flex items-center space-x-2 rounded-full bg-indigo-950/90 border border-indigo-500/30 text-indigo-200 px-4 py-2.5 text-xs font-semibold shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom duration-300">
+          <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
+          <span>Syncing with Google Sheets Database...</span>
+        </div>
+      )}
+
+      {/* Toasts overlay stack */}
+      <div className="fixed top-6 right-6 z-[110] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto flex items-start gap-3 rounded-2xl border p-4 shadow-2xl backdrop-blur-md transition-all duration-300 animate-in slide-in-from-right ${
+              toast.type === 'success'
+                ? 'bg-[#0a1610]/95 border-emerald-500/30 text-emerald-300'
+                : toast.type === 'error'
+                ? 'bg-[#180a0d]/95 border-rose-500/30 text-rose-300'
+                : 'bg-[#0f111a]/95 border-indigo-500/30 text-indigo-300'
+            }`}
+          >
+            <div className="shrink-0 mt-0.5">
+              {toast.type === 'success' && <CheckCircle className="h-5 w-5 text-emerald-400" />}
+              {toast.type === 'error' && <AlertCircle className="h-5 w-5 text-rose-400" />}
+              {toast.type === 'info' && <Info className="h-5 w-5 text-indigo-400" />}
+            </div>
+            <div className="flex-1">
+              <p className="font-sans text-xs font-semibold leading-relaxed">
+                {toast.message}
+              </p>
+            </div>
+            <button
+              onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+              className="shrink-0 text-white/30 hover:text-white/70 transition-colors p-0.5"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+
       {/* Top Banner and Navigation */}
       <div className="flex-1 flex flex-col">
         {!isDirectLink && (

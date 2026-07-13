@@ -22,6 +22,7 @@ interface LeaderboardProps {
   refreshTrigger: number;
   token?: string | null;
   spreadsheetId?: string | null;
+  appsScriptUrl?: string | null;
 }
 
 // Highly polished educational preview leaderboard when offline
@@ -68,21 +69,20 @@ export default function Leaderboard({
   refreshTrigger,
   token,
   spreadsheetId,
+  appsScriptUrl,
 }: LeaderboardProps) {
   const [scores, setScores] = useState<SheetScoreRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showDemoData, setShowDemoData] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadLeaderboardData = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      if (token && spreadsheetId) {
-        const sheetScores = await fetchScores(token, spreadsheetId);
-        const combined = showDemoData ? [...sheetScores, ...LOCAL_LEADERBOARD_MOCKS] : sheetScores;
-        const sorted = [...combined].sort((a, b) => {
+      if ((token && spreadsheetId) || appsScriptUrl) {
+        const sheetScores = await fetchScores(token || null, spreadsheetId || null, appsScriptUrl);
+        const sorted = [...sheetScores].sort((a, b) => {
           if (b.percentage !== a.percentage) {
             return b.percentage - a.percentage;
           }
@@ -91,8 +91,7 @@ export default function Leaderboard({
         setScores(sorted);
       } else {
         const local = getLocalScores();
-        const combined = showDemoData ? [...local, ...LOCAL_LEADERBOARD_MOCKS] : local;
-        const sorted = [...combined].sort((a, b) => {
+        const sorted = [...local].sort((a, b) => {
           if (b.percentage !== a.percentage) {
             return b.percentage - a.percentage;
           }
@@ -104,8 +103,7 @@ export default function Leaderboard({
       console.error(err);
       setError('Failed to fetch scores from Google Sheets. Displaying local cache.');
       const local = getLocalScores();
-      const combined = showDemoData ? [...local, ...LOCAL_LEADERBOARD_MOCKS] : local;
-      const sorted = [...combined].sort((a, b) => {
+      const sorted = [...local].sort((a, b) => {
         if (b.percentage !== a.percentage) {
           return b.percentage - a.percentage;
         }
@@ -119,7 +117,7 @@ export default function Leaderboard({
 
   useEffect(() => {
     loadLeaderboardData();
-  }, [refreshTrigger, showDemoData, token, spreadsheetId]);
+  }, [refreshTrigger, token, spreadsheetId, appsScriptUrl]);
 
   const filteredScores = scores.filter(item => 
     item.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -211,33 +209,20 @@ export default function Leaderboard({
             className="w-full rounded-xl border border-white/10 bg-[#141414] pl-10 pr-4 py-2.5 font-sans text-xs text-white placeholder-white/20 focus:border-white/30 focus:outline-none focus:ring-0"
           />
         </div>
-        <button
-          onClick={() => setShowDemoData(prev => !prev)}
-          className="shrink-0 w-full sm:w-auto flex items-center justify-center space-x-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 font-sans text-xs font-semibold text-white/80 hover:bg-white/10 transition-all cursor-pointer"
-        >
-          <span>{showDemoData ? "Showing Demo Data" : "Show Demo Data"}</span>
-          <div className={`h-2 w-2 rounded-full ${showDemoData ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`} />
-        </button>
       </div>
 
       {/* Leaderboard Podium Section (Top 3 Visualizer) */}
       {scores.length === 0 ? (
-        <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-6 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+        <div className="rounded-2xl border border-white/5 bg-[#141414] p-12 text-center space-y-4 max-w-lg mx-auto my-12 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
           <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 border border-white/10 text-white/40">
             <Trophy className="h-6 w-6" />
           </div>
           <div className="space-y-2">
             <h4 className="font-sans text-sm font-bold text-white">No Leaderboard Submissions</h4>
             <p className="font-sans text-xs text-white/50 leading-relaxed">
-              This browser has not recorded any local quiz sessions yet. Run a quiz first to log your score, or enable Demo Data to preview the interface layout.
+              No quiz scores have been recorded yet. Complete a quiz as a candidate to log your score and view the rankings!
             </p>
           </div>
-          <button
-            onClick={() => setShowDemoData(true)}
-            className="inline-flex items-center space-x-1.5 rounded-xl border border-amber-500/20 bg-amber-500/10 hover:bg-amber-500/20 px-4 py-2 font-sans text-xs font-semibold text-amber-400 transition-all cursor-pointer"
-          >
-            <span>Enable Demo Data</span>
-          </button>
         </div>
       ) : (
         <>

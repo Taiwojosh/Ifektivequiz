@@ -6,8 +6,12 @@
 export interface Question {
   id: string;
   text: string;
-  type: 'mcq' | 'short';
+  type: 'mcq' | 'short' | 'checkbox' | 'paragraph' | 'dropdown' | 'scale' | 'essay';
   options?: string[];
+  scaleMin?: number;
+  scaleMax?: number;
+  scaleMinLabel?: string;
+  scaleMaxLabel?: string;
   correctAnswer: string;
   category: string;
   explanation?: string;
@@ -24,7 +28,7 @@ export interface Quiz {
 export interface QuizResponse {
   questionId: string;
   questionText: string;
-  questionType: 'mcq' | 'short';
+  questionType: 'mcq' | 'short' | 'checkbox' | 'paragraph' | 'dropdown' | 'scale' | 'essay';
   category: string;
   userAnswer: string;
   correctAnswer: string;
@@ -59,7 +63,7 @@ export interface SheetResponseRow {
   userEmail: string;
   questionIndex: number;
   questionText: string;
-  type: 'mcq' | 'short';
+  type: 'mcq' | 'short' | 'checkbox' | 'paragraph' | 'dropdown' | 'scale' | 'essay';
   userAnswer: string;
   correctAnswer: string;
   isCorrect: boolean;
@@ -69,7 +73,7 @@ export interface SheetResponseRow {
 export interface CandidateResponse {
   questionId: string;
   questionText: string;
-  questionType: 'mcq' | 'short';
+  questionType: 'mcq' | 'short' | 'checkbox' | 'paragraph' | 'dropdown' | 'scale' | 'essay';
   category: string;
   userAnswer: string;
   correctAnswer: string;
